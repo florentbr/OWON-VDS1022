@@ -1,0 +1,29 @@
+
+
+** librxtxSerial
+
+https://packages.debian.org/sid/librxtx-java
++ changed soname to 'librxtxSerial.so'
+
+Copyright: 1997-2007, Trent Jarvi <tjarvi@qbang.org>
+
+
+
+** libusbJava
+
+https://packages.debian.org/sid/libusb-java-lib
++ changed soname to 'libusbJava.so'
++ added `rpath=$ORIGIN` to resolve libusb-0.1.so.4 in the same folder
+
+Copyright (c) 2005-2006 Andreas Schläpfer <spandi@users.sourceforge.net>
+
+
+
+** libusb-0.1.so.4
+
+https://packages.debian.org/sid/libusb-0.1-4
+
+Copyright (c) 2000-2003 Johannes Erdfelt <johannes@erdfelt.com>
+Copyright (c) 2003 Brad Hards <bradh@frogmouth.net>
+Copyright (c) 2002-2005 Nathan Hjelm <hjelmn@users.sourceforge.net>
+
