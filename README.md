@@ -42,6 +42,13 @@ https://www.java.com/en/download/manual.jsp
 
 ## Changes
 
+2019/10/19
+
+* added support to Puppy Linux
+* fixed unsupported translucency by some OS
+* fixed reset operation on sliders
+* fixed english translation in the calibration dialog and re-factored load/export
+
 2019/09/23
 
 * fixed swallowed exception Assistive Technology not found

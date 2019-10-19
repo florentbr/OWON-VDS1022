@@ -40,7 +40,7 @@ REG QUERY "%DRIVER_KEY%\0000" /v "MatchingDeviceId" 1>NUL 2>NUL && GOTO:LOCATE_J
 ECHO Install driver ...
 
 where pnputil 1>NUL 2>NUL    || GOTO:ERR_DRIVER
-powershell -c "Start-Process pnputil -ArgumentList '/add-driver \"%DRIVER_INF%\" /install' -Wait -Verb RunAs"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process pnputil -ArgumentList '/add-driver \"%DRIVER_INF%\" /install' -Wait -Verb RunAs"
 pnputil /enum-drivers | find /i "%DRIVER_ID%" >NUL  || GOTO:ERR_DRIVER
 
 
@@ -78,10 +78,10 @@ SET PS_DOWNLOAD_JAVA="(New-Object System.Net.WebClient).DownloadFile('%JRE_URL:"
 SET PS_INSTALL_JAVA="Start-Process -FilePath '%JRE_FILE%' -ArgumentList 'INSTALLCFG=\"%JRE_FILE%.cfg\"' -Wait -Verb RunAs;"
 
 ECHO Downloading Java Runtime 8 ^(~80Mb, be patient^) ...
-powershell -c %PS_DOWNLOAD_JAVA% || GOTO:ERR_INSTALL_JRE
+powershell -NoProfile -ExecutionPolicy Bypass -Command %PS_DOWNLOAD_JAVA% || GOTO:ERR_INSTALL_JRE
 
 ECHO Installing Java Runtime 8 ...
-powershell -c %PS_INSTALL_JAVA% || GOTO:ERR_INSTALL_JRE
+powershell -NoProfile -ExecutionPolicy Bypass -Command %PS_INSTALL_JAVA% || GOTO:ERR_INSTALL_JRE
 
 DEL "%JRE_FILE%" 2>&1 >nul
 DEL "%JRE_FILE%.cfg" 2>&1 >nul
@@ -145,7 +145,7 @@ $lnk.IconLocation='%PK_USRDIR%\logo.ico,0';^
 $lnk.Save();
 
 DEL "%PK_MENU_LINK%" >nul 2>&1
-powershell -c "%PS_CREATE_LINK%"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "%PS_CREATE_LINK%"
 
 
 
@@ -188,12 +188,12 @@ REM SET PS_INSTALL_JAVA="Start-Process -FilePath msiexec -ArgumentList '/i \"%JR
 
 REM FOR /F %%f in ("%JRE_FILE%") DO IF %%~zf LSS 40000000 (
 	REM ECHO Downloading Java Runtime 8 ^(~40Mb, be patient^) ...
-	REM powershell -c %PS_DOWNLOAD_JAVA% || GOTO:ERR_INSTALL_JRE
+	REM powershell -NoProfile -ExecutionPolicy Bypass -Command  %PS_DOWNLOAD_JAVA% || GOTO:ERR_INSTALL_JRE
 REM )
 REM FOR /F %%f in ("%JRE_FILE%") DO IF %%~zf LSS 40000000 GOTO:ERR_INSTALL_JRE
 
 REM ECHO Installing Java Runtime 8 ...
-REM powershell -c %PS_INSTALL_JAVA% || GOTO:ERR_INSTALL_JRE
+REM powershell -NoProfile -ExecutionPolicy Bypass -Command  %PS_INSTALL_JAVA% || GOTO:ERR_INSTALL_JRE
 
 REM GOTO:LOCATE_JAVA
 
