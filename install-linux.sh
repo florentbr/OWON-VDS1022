@@ -8,13 +8,10 @@ fi
 THIS_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd) || exit 1
 TEMP_DIR=$(readlink -f /tmp)
 
-PK_PACKAGE=
-PK_ARCH=
-PK_JAVA=
+PK_ID='owon-vds-tiny'
 PK_VERSION=$(<"$THIS_DIR/version.txt")
 PK_FNAME="OWON-VDS1022"
 PK_VENDOR='Copyright (C) Fujian Lilliput Optoelectronics Technology Co.,Ltd'
-PK_ID='owon-vds-tiny'
 PK_NAME='OWON VDS1022 Oscilloscope'
 PK_GENERICNAME='Oscilloscope'
 PK_USAGE='Analyze an electrical signal'
@@ -22,34 +19,36 @@ PK_CATEGORIES='Electronics;Engineering'
 PK_SUMMARY='Application for the OWON VDS1022 oscilloscope'
 PK_CONTACT='florentbr@gmail.com'
 PK_HOMEPAGE='https://github.com/florentbr/Owon-VDS1022'
-PK_RULES_DIR=
-PK_APP_DIR='/usr/share/owon-vds-tiny'
-PK_LIB_DIR='/usr/lib/owon-vds-tiny'
-PK_USER_DIR='$HOME/.owon-vds-tiny'
-PK_BIN_PATH='/usr/bin/owon-vds-tiny'
+PK_APP_DIR="/usr/share/$PK_ID"
+PK_LIB_DIR="/usr/lib/$PK_ID"
+PK_USER_DIR="\$HOME/.$PK_ID"
 PK_DESCRIPTION='Unofficial release with a few fixes and improvements:
  * New shortcuts: single trigger, trigger level, offsets, coupling, inversion, reset ...
  * Disabled annoying dock animations
  * Disabled leave/stop confirmation while recording/playing
  * ...'
 PK_PREINSTALL="
-rm -f /etc/udev/rules.d/*owon*.rules
-rm -rf ${PK_USER_DIR}"
+rm -f \"/etc/udev/rules.d/*owon*.rules\"
+rm -f \"$PK_USER_DIR/preferences*\"
+"
 PK_POSTINSTALL="
 udevadm control --reload-rules
-udevadm trigger"
+udevadm trigger
+"
 PK_POSTREMOVE="
-rm -rf ${PK_USER_DIR}"
+rm -rf \"$PK_USER_DIR\"
+"
 
 
 main () {
 
-	local arch
-	case "$(uname -m)" in
-		x86_64|amd64) arch=x86_64  ;;
-		i?86)         arch=i386    ;;
-		*)            raise "Architecture not supported: $(uname -m)"  ;;
+	local arch=$(dpkg --print-architecture 2>/dev/null || uname -m)
+	case "$arch" in
+		x86_64)   arch=amd64 ;;
+		i?86)     arch=i386  ;;
+		aarch64)  arch=arm64 ;;
 	esac
+	[ -d "$THIS_DIR/lib/linux/$arch" ] || raise "Architecture not supported: ${arch}"
 
 	local packager
 	for packager in apt pacman dnf yum zypper ppm '' ; do
@@ -89,20 +88,18 @@ main () {
 	pushd "${PK_PACKAGE%/*}" >/dev/null
 
 	case "$packager" in
-		apt)     apt install "$PK_PACKAGE"         ;;
-		pacman)  pacman -U "$PK_PACKAGE"           ;;
-		dnf)     dnf install "$PK_PACKAGE"         ;;
-		zipper)  zipper install "$PK_PACKAGE"      ;;
-		yum)     yum install "$PK_PACKAGE"         ;;
-		ppm)     [ -z "$(pkg li openjdk-8-jre_8u)" ] && {
-		           pkg -f repo-update
-		           pkg -f add openjdk-8-jre_8u
-		         }
-		         pkg -f install "$PK_PACKAGE"      ;;
-		*)       raise "Packager not supported"    ;;
+		apt)     apt install "$PK_PACKAGE"       ;;
+		pacman)  pacman -U "$PK_PACKAGE"         ;;
+		dnf)     dnf install "$PK_PACKAGE"       ;;
+		zipper)  zipper install "$PK_PACKAGE"    ;;
+		yum)     yum install "$PK_PACKAGE"       ;;
+		ppm)     pkg -f install "$PK_PACKAGE"    ;;
+		*)       raise "Packager not supported"  ;;
 	esac
 
 	popd >/dev/null
+
+	env -i /bin/bash -c 'type java >/dev/null 2>&1' || raise "java binary not found!"
 
 	printf "\nDone!\n\n"
 
@@ -112,9 +109,8 @@ main () {
 build-deb () {
 	local arch=$1
 
-	PK_ARCH=${arch/x86_64/amd64}
+	PK_ARCH=$arch
 	PK_PACKAGE="$TEMP_DIR/$PK_FNAME-$PK_VERSION.$PK_ARCH.deb"
-	PK_JAVA='/usr/lib/jvm/java-8-*/jre/bin/java'
 	PK_RULES_DIR='/lib/udev/rules.d'
 
 	add_files "$arch"
@@ -124,7 +120,7 @@ build-deb () {
 	write ./DEBIAN/control <<-EOF
 	Package: ${PK_ID}
 	Version: ${PK_VERSION}
-	Depends: openjdk-8-jre, libc6 (>= 2.15)
+	Depends: java8-runtime, libc6 (>= 2.15)
 	Section: non-free/electronics
 	Priority: optional
 	Architecture: ${PK_ARCH}
@@ -142,16 +138,14 @@ build-deb () {
 
 	rm -f $PK_PACKAGE
 	dpkg-deb -b -Zgzip . "$PK_PACKAGE" >/dev/null || exit 1
-	# su $SUDO_USER -c "lintian $PK_PACKAGE"
 }
 
 
 build-pac () {
 	local arch=$1
 
-	PK_ARCH=$arch
+	PK_ARCH=${arch/amd64/x86_64}
 	PK_PACKAGE="$TEMP_DIR/$PK_FNAME-$PK_VERSION.$PK_ARCH.pac"
-	PK_JAVA='/usr/lib/jvm/java-8-*/jre/bin/java'
 	PK_RULES_DIR='/usr/lib/udev/rules.d'
 
 	add_files "$arch"
@@ -168,16 +162,13 @@ build-pac () {
 	packager = ${PK_CONTACT}
 	size = ${PK_SIZE}
 	arch = ${PK_ARCH}
-	depend = jre8-openjdk
+	depend = java-runtime
 	EOF
 
 	write .INSTALL +x <<-EOF
-	pre_install () {${PK_PREINSTALL}
-	}
-	post_install () {${PK_POSTINSTALL}
-	}
-	post_remove () {${PK_POSTREMOVE}
-	}
+	pre_install () {${PK_PREINSTALL}}
+	post_install () {${PK_POSTINSTALL}}
+	post_remove () {${PK_POSTREMOVE}}
 	pre_upgrade () {
 	pre_install
 	}
@@ -194,9 +185,8 @@ build-pac () {
 build-rpm () {
 	local arch=$1
 
-	PK_ARCH=$arch
+	PK_ARCH=${arch/amd64/x86_64}
 	PK_PACKAGE="$TEMP_DIR/$PK_FNAME-$PK_VERSION.$PK_ARCH.rpm"
-	PK_JAVA='/usr/lib/jvm/java-1.8.0-*/jre/bin/java'
 	PK_RULES_DIR='/usr/lib/udev/rules.d'
 
 	mkdir BUILD BUILDROOT RPMS SOURCES SPECS SRPMS
@@ -208,7 +198,7 @@ build-rpm () {
 
 	echo 'Build rpm package ...'
 
-	write ./SPECS/$PK_ID.spec <<-EOF
+	write "./SPECS/$PK_ID.spec" <<-EOF
 	Name: ${PK_ID}
 	Version: ${PK_VERSION/-*/}
 	Release: ${PK_VERSION/*-/}
@@ -218,7 +208,7 @@ build-rpm () {
 	Vendor: ${PK_VENDOR}
 	URL: ${PK_HOMEPAGE}
 	Packager: ${PK_CONTACT}
-	Requires: java-1.8.0-openjdk, libc.so.6
+	Requires: jre, libc.so.6
 	AutoReqProv: no
 	%define _binary_payload w6.gzdio
 	%description
@@ -231,28 +221,26 @@ build-rpm () {
 	EOF
 
 	rpmbuild -bb \
-	  --define "_topdir ${PWD}" \
-	  --buildroot "${PWD}/BUILDROOT" \
-	  --target $arch ./SPECS/$PK_ID.spec \
+	  --define "_topdir $PWD" \
+	  --buildroot "$PWD/BUILDROOT" \
+	  --target "$PK_ARCH" "./SPECS/$PK_ID.spec" \
 	  --noclean --nocheck --quiet \
 	  > /dev/null || exit 1
 
 	rm -f "$PK_PACKAGE"
 	mv ./RPMS/*/*.rpm "$PK_PACKAGE" || exit 1
-	# su $SUDO_USER -c "rpmlint $PK_PACKAGE"
 }
 
 
 build-pet () {
 	local arch=$1
 
-	PK_ARCH=${arch/x86_64/amd64}
+	PK_ARCH=$arch
 	PK_PACKAGE="$TEMP_DIR/$PK_FNAME-$PK_VERSION.$PK_ARCH.pet"
-	PK_JAVA='/usr/lib/jvm/java-8-*/jre/bin/java'
 	PK_RULES_DIR='/lib/udev/rules.d'
 
-	mkdir $PK_FNAME-$PK_VERSION.$PK_ARCH
-	pushd $PK_FNAME-$PK_VERSION.$PK_ARCH >/dev/null
+	mkdir "$PK_FNAME-$PK_VERSION.$PK_ARCH"
+	pushd "$PK_FNAME-$PK_VERSION.$PK_ARCH" >/dev/null
 
 	add_files "$arch"
 
@@ -266,14 +254,14 @@ build-pet () {
 	local f06=$(expr $PK_SIZE / 1024)K  #size
 	local f07=  #path
 	local f08=$PK_FNAME-$PK_VERSION.$PK_ARCH.pet  #fullfilename
-	local f09=+openjdk-8-jre_8u,+libc6  #dependencies
+	local f09=+java8-runtime,+libc6  #dependencies
 	local f10=$PK_SUMMARY  #description
 	local f11=  #compileddistro
 	local f12=  #compiledrelease
 	local f13=  #repo
 
 	write pet.specs <<< "$f01|$f02|$f03|$f04|$f05|$f06|$f07|$f08|$f09|$f10|$f11|$f12|$f13|"
-	write pinstall.sh +x <<< "${PK_PREINSTALL}\n${PK_POSTINSTALL}"
+	write pinstall.sh +x <<< "${PK_PREINSTALL}${PK_POSTINSTALL}"
 	write puninstall.sh +x <<< "${PK_POSTREMOVE}"
 
 	popd >/dev/null
@@ -289,33 +277,31 @@ add_files () {
 
 	echo 'Add usb permissions ...'
 
-	write .$PK_RULES_DIR/70-$PK_ID.rules  <<-EOF
+	write ".$PK_RULES_DIR/70-$PK_ID.rules"  <<-EOF
 	SUBSYSTEMS=="usb", ATTRS{idVendor}=="5345", ATTRS{idProduct}=="1234", GROUP="plugdev", MODE="0666"
 	EOF
 
 	echo 'Add application files ...'
 
-	[ -d "$THIS_DIR/lib/linux/$arch" ] || raise "Architecture not supported: ${arch}"
+	cpdir ".$PK_LIB_DIR/"  "$THIS_DIR/lib/linux/$arch/lib"*
+	cpdir ".$PK_APP_DIR/"  "$THIS_DIR/jar" "$THIS_DIR/fwr" "$THIS_DIR/doc"
+	cpfile ".$PK_APP_DIR/version.txt"  "$THIS_DIR/version.txt"
 
-	cpdir .$PK_LIB_DIR/  "$THIS_DIR/lib/linux/$arch/lib*"
-
-	cpdir .$PK_APP_DIR/  "$THIS_DIR/jar" "$THIS_DIR/fwr" "$THIS_DIR/doc"
-
-	write .$PK_BIN_PATH +x <<-EOF
+	write "./usr/bin/$PK_ID" +x <<-EOF
 	#!/bin/bash
-	${PK_JAVA} \\
+	export LD_LIBRARY_PATH=${PK_LIB_DIR}
+	java \\
 	  -Djava.library.path='${PK_LIB_DIR}' \\
 	  -Duser.dir="${PK_USER_DIR}" \\
-	  -Djavax.accessibility.assistive_technologies= \\
 	  -cp '${PK_APP_DIR}/jar/*' \\
-	  'com.owon.vds.tiny.Main'
+	  com.owon.vds.tiny.Main
 	EOF
 
 	echo 'Add launcher ...'
 
-	cpfile ./usr/share/pixmaps/$PK_ID.png  "$THIS_DIR/ico/logo48.png"
+	cpfile "./usr/share/pixmaps/$PK_ID.png"  "$THIS_DIR/ico/icon48.png"
 
-	write ./usr/share/applications/$PK_ID.desktop <<-EOF
+	write "./usr/share/applications/$PK_ID.desktop" <<-EOF
 	[Desktop Entry]
 	Name=${PK_NAME}
 	GenericName=${PK_GENERICNAME}
@@ -327,7 +313,7 @@ add_files () {
 	Categories=${PK_CATEGORIES};
 	EOF
 
-	write ./usr/share/appdata/$PK_ID.appdata.xml <<-EOF
+	write "./usr/share/appdata/$PK_ID.appdata.xml" <<-EOF
 	<?xml version="1.0" encoding="UTF-8"?>
 	​<component type="desktop">
 	​  <id>${PK_ID}</id>
@@ -348,7 +334,7 @@ add_files () {
 
 cpdir () {
 	mkdir -p "$1"
-	cp --no-preserve=mode,ownership -r ${@:2} "$1"
+	cp --no-preserve=mode,ownership -r "${@:2}" "$1"
 }
 
 cpfile () {
@@ -363,7 +349,7 @@ write () {
 }
 
 raise () {
-	echo "Error: $1" >&2
+	>&2 printf "\nError: $1\n"
 	exit 1
 }
 

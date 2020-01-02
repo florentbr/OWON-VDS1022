@@ -5,18 +5,22 @@ This software is an unofficial release for the OWON VDS oscilloscope with a few 
 
 * Scripts to install the app on Linux/Windows/Mac
 * New shortcuts: single trigger, trigger level, offsets, coupling, inversion, reset ...
-* Disabled anoying dock animations
-* Disabled leave/stop confirmation while recording/playing
+* Added buttons to change the color of the waves
+* Improved the dock layout and disabled animations
+* Improved the device stability
+* Disabled the leave/stop confirmation while recording/playing
+* Merged the save image / export operation to a single button/dialog
+* Many fixes (see change list)
 
 
 It's based on the OWON Windows software for VDS1022/I 1.0.30 :  
-http://files.owon.com.cn/software/pc/OWON_VDS_C2_Setup.zip
+http://files.owon.com.cn/software/pc/OWON_VDS_C2_Setup.zip  
 
 Official website :  
-http://www.owon.com.hk/products_owon_vds_series_pc_oscilloscope
+http://www.owon.com.hk/products_owon_vds_series_pc_oscilloscope  
 
 Unofficial release :  
-https://github.com/florentbr/Owon-VDS1022/releases
+https://github.com/florentbr/Owon-VDS1022/releases  
 
 
 
@@ -28,19 +32,60 @@ Linux   : `bash install-linux.sh`
 OSX     : `bash install-mac.sh`  
 Windows : `install-win.cmd`  
 
+On Linux, the script builds a package according to the platform and installs it with the default package manager.  
+On Windows, the script copies the files to `C:\Program Files`, registers the app for uninstall and creates a menu entry.  
+On Mac, the script simply copies the files to `/Applications`.  
 
 
 ## Dependencies
 
-This software depends on Java Runtime Environnement 8. Due to the use of a deprecated api, the app won't run on Java 9 and superior. The installer will install the required version. In case it fails, you can try to install it manually:  
+This software requires Java Runtime Environnement 8 or superior:
 
-https://openjdk.java.net/  
 https://adoptopenjdk.net/  
+https://openjdk.java.net/  
 https://www.java.com/en/download/manual.jsp  
+https://www.oracle.com/technetwork/java/javase/downloads/jre8-downloads-2133155.html  
 
+
+## Calibration
+
+The device can be calibrated either automatically (Home/Utility) or manually (F2).
+
+If you wish to calibrate the device manually then:
+* Disconnect the probes
+* Select a x1 ratio and a DC coupling for each probe 
+* Select the targeted voltage to calibrate
+* Move the voltage offset to 0 volts
+* Adjust the Zero compensation to align the signal with the cursor
+* Move the voltage offset to the top
+* Adjust the Zero amplitude to align the signal with the cursor
+* Connect the probe to a reference voltage
+* Adjust the Coarse Gain until the signal has the expected amplitude
+
+The factory calibration is stored directly in the device.
+The current calibration is stored in the user folder.
 
 
 ## Changes
+
+2020/01/03 (1.0.30-cf7)
+
+* added librairies for ARM hardware (linux)
+* updated the code for Java 8 and supperior and improved installers
+* improved the device stability (synchronised heartbeat, 1 job per command, deduplicated commands).
+* added new set of icons
+* improved dock layout and panes
+* improved Save/Pin wave pane
+* merged save image / export operation to a single button/dialog
+* added buttons to change the color of the waves
+* added shortcuts: save/restore the current settings, zoom switch, full screen
+* added localized trigger status messages
+* fixed window displayed under taskbar
+* fixed single trigger triggered unexpectedly
+* fixed math/composite auto-set voltage
+* fixed scaling of the view (3 views / print preview)
+* fixed focus issues with dialogs/sliders
+* fixed mouse gesture labels
 
 2019/10/19
 
