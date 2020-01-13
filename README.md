@@ -13,28 +13,11 @@ This software is an unofficial release for the OWON VDS oscilloscope with a few 
 * Many fixes (see change list)
 
 
-It's based on the OWON Windows software for VDS1022/I 1.0.30 :  
+This software is based on the OWON release for VDS1022/I 1.0.30 :  
 http://files.owon.com.cn/software/pc/OWON_VDS_C2_Setup.zip  
 
 Official website :  
 http://www.owon.com.hk/products_owon_vds_series_pc_oscilloscope  
-
-Unofficial release :  
-https://github.com/florentbr/Owon-VDS1022/releases  
-
-
-
-## Install
-
-Open a terminal window in this folder and type:  
-
-Linux   : `bash install-linux.sh`  
-OSX     : `bash install-mac.sh`  
-Windows : `install-win.cmd`  
-
-On Linux, the script builds a package according to the platform and installs it with the default package manager.  
-On Windows, the script copies the files to `C:\Program Files`, registers the app for uninstall and creates a menu entry.  
-On Mac, the script simply copies the files to `/Applications`.  
 
 
 ## Dependencies
@@ -47,9 +30,34 @@ https://www.java.com/en/download/manual.jsp
 https://www.oracle.com/technetwork/java/javase/downloads/jre8-downloads-2133155.html  
 
 
+## Install
+
+Download and extract the following archive:  
+
+https://github.com/florentbr/OWON-VDS1022/archive/master.zip  
+
+#### Windows
+
+Right click on `install-win.cmd` and select "Run as administrator".  
+The script installs the drivers, copies the files, registers for uninstall and creates a menu entry.  
+User settings are stored in `%APPDATA%\OwonVdsTiny`  
+
+#### Linux
+
+Open a terminal window and execute `sudo bash install-linux.sh` .  
+The script builds a package according to the distribution and installs it with the default package manager.  
+User settings are stored in `$Home/.owon-vds-tiny`  
+
+#### OSX
+
+Open a terminal window and execute `sudo bash install-mac.sh` .  
+The script simply creates/copies the files into `/Applications` .  
+User settings are stored in `$Home/.owon-vds-tiny`  
+
+
 ## Calibration
 
-The device can be calibrated either automatically (Home/Utility) or manually (F2).
+The device can be calibrated either automatically (Home/Utility/Auto-Calibrate) or manually (F2).
 
 If you wish to calibrate the device manually then:
 * Disconnect the probes
@@ -62,26 +70,32 @@ If you wish to calibrate the device manually then:
 * Connect the probe to a reference voltage
 * Adjust the Coarse Gain until the signal has the expected amplitude
 
-The factory calibration is stored directly in the device.
-The current calibration is stored in the user folder.
+The factory calibration is stored directly in the device.  
+The current calibration is stored in the user folder.  
 
 
 ## Changes
 
+2020/01/13 (1.0.30-cf8)
+* fixed combobox popups disapearing once clicked (Windows)
+* improved install scripts
+
 2020/01/03 (1.0.30-cf7)
 
 * added librairies for ARM hardware (linux)
-* updated the code for Java 8 and supperior and improved installers
-* improved the device stability (synchronised heartbeat, 1 job per command, deduplicated commands).
+* improved device stability (synchronised heartbeat, 1 job per command, deduplicated commands)
 * added new set of icons
 * improved dock layout and panes
 * improved Save/Pin wave pane
+* improved manual calibration dialog (F2)
 * merged save image / export operation to a single button/dialog
 * added buttons to change the color of the waves
 * added shortcuts: save/restore the current settings, zoom switch, full screen
 * added localized trigger status messages
-* fixed window displayed under taskbar
-* fixed single trigger triggered unexpectedly
+* fixed the code to support Java 8 and superior (Java 6 no longer supported)
+* fixed install scripts
+* fixed window size/position at startup
+* fixed single trigger triggered unexpectedly once initiated
 * fixed math/composite auto-set voltage
 * fixed scaling of the view (3 views / print preview)
 * fixed focus issues with dialogs/sliders

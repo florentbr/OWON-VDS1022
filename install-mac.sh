@@ -1,9 +1,11 @@
-#!/bin/bash -e
+#!/bin/bash
 
 if [[ $EUID -ne 0 ]] ;then
-	sudo /bin/bash -e "$0"
-	exit $?
+	echo "Error: This script requires eleveted privileges." >&2
+	exit 1
 fi
+
+set -e
 
 THIS_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd) || exit 1
 THIS_ARCH=$(uname -m) || exit 1
@@ -56,6 +58,7 @@ main () {
 	cpdir "$PK_APP_DIR/Contents/Resources/"  "$THIS_DIR/jar"
 
 	cpfile "$PK_APP_DIR/Contents/Resources/$PK_ID.icns" "$THIS_DIR/ico/icon48.icns"
+	cpfile "$PK_APP_DIR/Contents/Resources/version.txt" "$THIS_DIR/version.txt"
 
 	write "$PK_APP_DIR/Contents/MacOS/$PK_ID" +x <<-EOF
 	#!/bin/bash
@@ -109,7 +112,7 @@ cpfile () {
 
 write () {
 	mkdir -p "$(dirname "$1")"
-	cat - > "$1"
+	echo -e "$(cat -)" > "$1"
 	[ -z "$2" ] || chmod "$2" "$1"
 }
 

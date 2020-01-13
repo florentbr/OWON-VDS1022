@@ -17,7 +17,7 @@ Copyright (c) 2010 Travis Robinson, <libusbdotnet@gmail.com>
 http://rxtx.qbang.org/wiki/index.php/Download#Pre-Built_Binaries  
 http://rxtx.qbang.org/pub/rxtx/rxtx-2.1-7-bins-r2.zip  
 
-Copyright (c) Trent Jarvi, <tjarvi@qbang.org>
+Copyright (c) Trent Jarvi, <tjarvi@qbang.org>  
 
 
 ###  Microsoft C Runtime 2010  (msvcr100.dll, msvcp100.dll)

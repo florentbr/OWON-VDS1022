@@ -1,9 +1,11 @@
-#!/bin/bash -e
+#!/bin/bash
 
 if [[ $EUID -ne 0 ]] ;then
-	sudo /bin/bash -e "$0"
-	exit $?
+	echo "Error: This script requires eleveted privileges." >&2
+	exit 1
 fi
+
+set -e
 
 THIS_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd) || exit 1
 TEMP_DIR=$(readlink -f /tmp)
@@ -101,7 +103,7 @@ main () {
 
 	env -i /bin/bash -c 'type java >/dev/null 2>&1' || raise "java binary not found!"
 
-	printf "\nDone!\n\n"
+	echo -e "\nDone!\n"
 
 }
 
@@ -120,7 +122,7 @@ build-deb () {
 	write ./DEBIAN/control <<-EOF
 	Package: ${PK_ID}
 	Version: ${PK_VERSION}
-	Depends: java8-runtime, libc6 (>= 2.15)
+	Depends: default-jre, libc6 (>= 2.15)
 	Section: non-free/electronics
 	Priority: optional
 	Architecture: ${PK_ARCH}
@@ -169,12 +171,8 @@ build-pac () {
 	pre_install () {${PK_PREINSTALL}}
 	post_install () {${PK_POSTINSTALL}}
 	post_remove () {${PK_POSTREMOVE}}
-	pre_upgrade () {
-	pre_install
-	}
-	post_upgrade () {
-	post_install
-	}
+	pre_upgrade () {${PK_PREINSTALL}}
+	post_upgrade () {${PK_POSTINSTALL}}
 	EOF
 
 	rm -f "$PK_PACKAGE"
@@ -254,7 +252,7 @@ build-pet () {
 	local f06=$(expr $PK_SIZE / 1024)K  #size
 	local f07=  #path
 	local f08=$PK_FNAME-$PK_VERSION.$PK_ARCH.pet  #fullfilename
-	local f09=+java8-runtime,+libc6  #dependencies
+	local f09=+default-jre,+libc6  #dependencies
 	local f10=$PK_SUMMARY  #description
 	local f11=  #compileddistro
 	local f12=  #compiledrelease
@@ -283,9 +281,8 @@ add_files () {
 
 	echo 'Add application files ...'
 
-	cpdir ".$PK_LIB_DIR/"  "$THIS_DIR/lib/linux/$arch/lib"*
-	cpdir ".$PK_APP_DIR/"  "$THIS_DIR/jar" "$THIS_DIR/fwr" "$THIS_DIR/doc"
-	cpfile ".$PK_APP_DIR/version.txt"  "$THIS_DIR/version.txt"
+	cpdir ".$PK_LIB_DIR/" "$THIS_DIR/lib/linux/$arch"/*
+	cpdir ".$PK_APP_DIR/" "$THIS_DIR/fwr" "$THIS_DIR/jar" "$THIS_DIR/doc" "$THIS_DIR/version.txt"
 
 	write "./usr/bin/$PK_ID" +x <<-EOF
 	#!/bin/bash
@@ -344,12 +341,12 @@ cpfile () {
 
 write () {
 	mkdir -p "$(dirname "$1")"
-	cat - > "$1"
+	echo -e "$(cat -)" > "$1"
 	[ -z "$2" ] || chmod "$2" "$1"
 }
 
 raise () {
-	>&2 printf "\nError: $1\n"
+	>&2 echo -e "\nError: $1"
 	exit 1
 }
 
