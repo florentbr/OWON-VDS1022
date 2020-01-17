@@ -76,6 +76,10 @@ The current calibration is stored in the user folder.
 
 ## Changes
 
+
+2020/01/17 (1.0.30-cf9)
+* fixed horizontal zoom when stopped
+
 2020/01/13 (1.0.30-cf8)
 * fixed combobox popups disapearing once clicked (Windows)
 * improved install scripts
