@@ -42,11 +42,15 @@ Right click on `install-win.cmd` and select "Run as administrator".
 The script installs the drivers, copies the files, registers for uninstall and creates a menu entry.  
 User settings are stored in `%APPDATA%\OwonVdsTiny`  
 
-#### Linux
+#### Linux (generic)
 
 Open a terminal window and execute `sudo bash install-linux.sh` .  
 The script builds a package according to the distribution and installs it with the default package manager.  
 User settings are stored in `$Home/.owon-vds-tiny`  
+
+#### Arch Linux
+
+A package is avaialbe in the [AUR](https://aur.archlinux.org/) as [`owon-vds`](https://aur.archlinux.org/packages/owon-vds/)
 
 #### OSX
 
