@@ -32,27 +32,31 @@ https://www.oracle.com/technetwork/java/javase/downloads/jre8-downloads-2133155.
 
 ## Install
 
-Download and extract the following archive:  
+Download and extract the latest release :  
 
-https://github.com/florentbr/OWON-VDS1022/archive/master.zip  
+https://github.com/florentbr/OWON-VDS1022/releases  
 
 #### Windows
 
 Right click on `install-win.cmd` and select "Run as administrator".  
+If the shortcut "OWON VDS1022 Oscilloscope" is not visible in the Windows menu, then restart your machine.  
+
 The script installs the drivers, copies the files, registers for uninstall and creates a menu entry.  
 User settings are stored in `%APPDATA%\OwonVdsTiny`  
 
 #### Linux
 
 Open a terminal window and execute `sudo bash install-linux.sh` .  
+  
 The script builds a package according to the distribution and installs it with the default package manager.  
-User settings are stored in `$Home/.owon-vds-tiny`  
+User settings are stored in `$HOME/.owon-vds-tiny`  
 
 #### OSX
 
 Open a terminal window and execute `sudo bash install-mac.sh` .  
+
 The script simply creates/copies the files into `/Applications` .  
-User settings are stored in `$Home/.owon-vds-tiny`  
+User settings are stored in `$HOME/.owon-vds-tiny`  
 
 
 ## Calibration
@@ -76,6 +80,15 @@ The current calibration is stored in the user folder.
 
 ## Changes
 
+
+2020/06/10 (1.0.30-cf10)
+* added Italian translation (thanks to Marco Morelli)
+* changed channel 1 factory color from red to green
+* changed default factory coupling from AC to DC
+* changed retore button to restore the saved settings instead of the factory settings
+* fixed trigger pulse/slope input width
+* removed unsupported install USB driver menu
+* improved/fixed install scripts (issues 4, 7, 8)
 
 2020/01/17 (1.0.30-cf9)
 * fixed horizontal zoom when stopped

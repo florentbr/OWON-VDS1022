@@ -1,13 +1,9 @@
 #!/bin/bash
 
-if [[ $EUID -ne 0 ]] ;then
-	echo "Error: This script requires eleveted privileges." >&2
-	exit 1
-fi
-
 set -e
+pushd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null
 
-THIS_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd) || exit 1
+THIS_DIR=$(pwd)
 TEMP_DIR=$(readlink -f /tmp)
 
 PK_ID='owon-vds-tiny'
@@ -23,26 +19,31 @@ PK_CONTACT='florentbr@gmail.com'
 PK_HOMEPAGE='https://github.com/florentbr/Owon-VDS1022'
 PK_APP_DIR="/usr/share/$PK_ID"
 PK_LIB_DIR="/usr/lib/$PK_ID"
-PK_USER_DIR="\$HOME/.$PK_ID"
 PK_DESCRIPTION='Unofficial release with a few fixes and improvements:
  * New shortcuts: single trigger, trigger level, offsets, coupling, inversion, reset ...
  * Disabled annoying dock animations
  * Disabled leave/stop confirmation while recording/playing
  * ...'
 PK_PREINSTALL="
-rm -f \"/etc/udev/rules.d/*owon*.rules\"
-rm -f \"$PK_USER_DIR/preferences*\"
+rm -f /etc/udev/rules.d/*owon*.rules
 "
 PK_POSTINSTALL="
 udevadm control --reload-rules
 udevadm trigger
+rm -f /home/*/.$PK_ID/preferences* || true
 "
 PK_POSTREMOVE="
-rm -rf \"$PK_USER_DIR\"
+rm -rf /home/*/.$PK_ID
 "
 
 
 main () {
+
+	[ "$EUID" = 0 ] || raise "This script requires eleveted privileges."
+
+	echo "==========================================================="
+	echo " Build package                                             "
+	echo "==========================================================="
 
 	local arch=$(dpkg --print-architecture 2>/dev/null || uname -m)
 	case "$arch" in
@@ -58,15 +59,9 @@ main () {
 		[ -x "$(command -v $packager)" ] && break
 	done
 
-
-	echo "==========================================================="
-	echo " Build package                                             "
-	echo "==========================================================="
-
 	local builddir="$TEMP_DIR/oqosnrlfhwsbrfk"
 	rm -rf "$builddir"
-	mkdir -p "$builddir"
-	chmod 755 "$builddir"
+	install -d -m 755 "$builddir"
 	pushd "$builddir" >/dev/null
 
 	case "$packager" in
@@ -80,7 +75,7 @@ main () {
 	popd >/dev/null
 	rm -rf "$builddir"
 
-	printf "\nPackage:\n  ${PK_PACKAGE}\n\n"
+	printf "\nPackage:\n ${PK_PACKAGE}\n\n"
 
 
 	echo "==========================================================="
@@ -90,7 +85,7 @@ main () {
 	pushd "${PK_PACKAGE%/*}" >/dev/null
 
 	case "$packager" in
-		apt)     apt install "$PK_PACKAGE"       ;;
+		apt)     apt install --reinstall "$PK_PACKAGE" ;;
 		pacman)  pacman -U "$PK_PACKAGE"         ;;
 		dnf)     dnf install "$PK_PACKAGE"       ;;
 		zipper)  zipper install "$PK_PACKAGE"    ;;
@@ -101,7 +96,7 @@ main () {
 
 	popd >/dev/null
 
-	env -i /bin/bash -c 'type java >/dev/null 2>&1' || raise "java binary not found!"
+	env -i /bin/bash -c 'type java >/dev/null 2>&1' || raise "Java not found!"
 
 	echo -e "\nDone!\n"
 
@@ -275,28 +270,24 @@ add_files () {
 
 	echo 'Add usb permissions ...'
 
-	write ".$PK_RULES_DIR/70-$PK_ID.rules"  <<-EOF
-	SUBSYSTEMS=="usb", ATTRS{idVendor}=="5345", ATTRS{idProduct}=="1234", GROUP="plugdev", MODE="0666"
+	write ".$PK_RULES_DIR/70-$PK_ID.rules" <<-EOF
+	SUBSYSTEMS=="usb", ATTRS{idVendor}=="5345", ATTRS{idProduct}=="1234", MODE="0666"
 	EOF
 
 	echo 'Add application files ...'
 
-	cpdir ".$PK_LIB_DIR/" "$THIS_DIR/lib/linux/$arch"/*
-	cpdir ".$PK_APP_DIR/" "$THIS_DIR/fwr" "$THIS_DIR/jar" "$THIS_DIR/doc" "$THIS_DIR/version.txt"
+	copy ".$PK_LIB_DIR/" "$THIS_DIR/lib/linux/$arch"/*
+	copy ".$PK_APP_DIR/" "$THIS_DIR/fwr" "$THIS_DIR/jar" "$THIS_DIR/doc" "$THIS_DIR/version.txt"
 
 	write "./usr/bin/$PK_ID" +x <<-EOF
 	#!/bin/bash
-	export LD_LIBRARY_PATH=${PK_LIB_DIR}
-	java \\
-	  -Djava.library.path='${PK_LIB_DIR}' \\
-	  -Duser.dir="${PK_USER_DIR}" \\
-	  -cp '${PK_APP_DIR}/jar/*' \\
-	  com.owon.vds.tiny.Main
+	export LD_LIBRARY_PATH=$PK_LIB_DIR
+	java -Djava.library.path='$PK_LIB_DIR' -Duser.dir="\$HOME/.$PK_ID" -cp '$PK_APP_DIR/jar/*' com.owon.vds.tiny.Main
 	EOF
 
 	echo 'Add launcher ...'
 
-	cpfile "./usr/share/pixmaps/$PK_ID.png"  "$THIS_DIR/ico/icon48.png"
+	copy "./usr/share/pixmaps/$PK_ID.png" "$THIS_DIR/ico/icon48.png"
 
 	write "./usr/share/applications/$PK_ID.desktop" <<-EOF
 	[Desktop Entry]
@@ -308,6 +299,7 @@ add_files () {
 	Terminal=false
 	Type=Application
 	Categories=${PK_CATEGORIES};
+	StartupWMClass=com-owon-vds-tiny-Main
 	EOF
 
 	write "./usr/share/appdata/$PK_ID.appdata.xml" <<-EOF
@@ -329,14 +321,14 @@ add_files () {
 }
 
 
-cpdir () {
-	mkdir -p "$1"
-	cp --no-preserve=mode,ownership -r "${@:2}" "$1"
-}
-
-cpfile () {
-	mkdir -p "$(dirname "$1")"
-	cp --no-preserve=mode,ownership "$2" "$1"
+copy () {
+	if [[ "$1" == */ ]] || [[ -d "$1" ]] ; then
+		mkdir -p "$1"
+		cp -r "${@:2}" "$1"
+	else
+		mkdir -p "$(dirname "$1")"
+		cp "${@:2}" "$1"
+	fi
 }
 
 write () {
@@ -346,7 +338,7 @@ write () {
 }
 
 raise () {
-	>&2 echo -e "\nError: $1"
+	>&2 echo -e "Error: $1"
 	exit 1
 }
 
