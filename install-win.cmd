@@ -3,19 +3,26 @@ setlocal
 
 pushd "%~dp0"
 
-set ENVPATH=%PATH%
-set PATH=%SYSTEMROOT%\System32
-set ARCH=%PROCESSOR_ARCHITECTURE%
+set _ID=OwonVdsTiny
+set _NAME=OWON VDS1022 Oscilloscope
+set _PUBLISHER=Fujian Lilliput Optoelectronics Technology Co.,Ltd
+set _HOMEPAGE=https://github.com/florentbr/Owon-VDS1022
+set _HELPLINK=https://owon.com.hk
+set /p _VERSION=<".\version.txt"
+set _ARCH=%PROCESSOR_ARCHITECTURE%
+set _PATH=%PATH%
 
-set PK_ID=OwonVdsTiny
-set PK_NAME=OWON VDS1022 Oscilloscope
-set PK_PUBLISHER=Fujian Lilliput Optoelectronics Technology Co.,Ltd
-set PK_HOMEPAGE=https://github.com/florentbr/Owon-VDS1022
-set PK_HELPLINK=https://owon.com.hk
-set /p PK_VERSION=<".\version.txt"
+set PATH=%SYSTEMROOT%\System32
+
+
+echo ===========================================================
+echo  Install %_NAME%
+echo ===========================================================
+
+echo Check environment ...
 
 reg query "HKU\S-1-5-19\Environment" >nul 2>nul || goto :err_permissions
-if not exist ".\lib\win\%ARCH%\" goto :err_architecture
+if not exist ".\lib\win\%_ARCH%\" goto :err_architecture
 if not exist "%APPDATA%" goto :err_env_appdata
 
 
@@ -36,7 +43,7 @@ if exist "%JAVA_HOME%\bin\javaw.exe" goto :end_locate_java
 
 echo Locate Java in PATH ...
 
-for %%I in ("javaw.exe") do for %%J in ("%%~dp$ENVPATH:I..") do set "JAVA_HOME=%%~fJ"
+for %%I in ("javaw.exe") do for %%J in ("%%~dp$_PATH:I..") do set "JAVA_HOME=%%~fJ"
 if not exist "%JAVA_HOME%\bin\javaw.exe" goto :err_java_path
 
 echo Add missing environment variable JAVA_HOME ...
@@ -51,7 +58,7 @@ echo Handle Java bitness ...
 
 "%JAVA_HOME%\bin\java.exe" -version >nul 2>nul || goto :err_java_run
 
-if /i [%ARCH%] equ [AMD64] "%JAVA_HOME%\bin\java.exe" -version 2>&1 | find /i "64-Bit" >nul || (
+if /i [%_ARCH%] equ [AMD64] "%JAVA_HOME%\bin\java.exe" -version 2>&1 | find /i "64-Bit" >nul || (
 	echo Switch to 32 bits install ...
 	"%SYSTEMROOT%\SysWOW64\cmd.exe" /c "%0"
 	exit /b %errorlevel%
@@ -60,33 +67,28 @@ if /i [%ARCH%] equ [AMD64] "%JAVA_HOME%\bin\java.exe" -version 2>&1 | find /i "6
 
 echo Install Microsoft C Runtime 2010 Library dependency ...
 
-xcopy ".\lib\win\%ARCH%\msv*100.dll" "%SYSTEMROOT%\System32\" /d /y /c >nul 2>nul
+xcopy ".\lib\win\%_ARCH%\msv*100.dll" "%SYSTEMROOT%\System32\" /d /y /c >nul 2>nul
 
 
 echo Install program files ...
 
-rmdir "%PROGRAMFILES%\%PK_ID%" /s /q >nul 2>nul
+rmdir "%PROGRAMFILES%\%_ID%" /s /q >nul 2>nul
 
-xcopy ".\doc\*"                         "%PROGRAMFILES%\%PK_ID%\doc\"        /y /e >nul || goto :err_file
-xcopy ".\fwr\*.bin"                     "%PROGRAMFILES%\%PK_ID%\fwr\"        /y /e >nul || goto :err_file
-xcopy ".\jar\*.jar"                     "%PROGRAMFILES%\%PK_ID%\jar\"        /y /e >nul || goto :err_file
-xcopy ".\lib\win\%ARCH%\LibusbJava.dll" "%PROGRAMFILES%\%PK_ID%\lib\"        /y /e >nul || goto :err_file
-xcopy ".\lib\win\%ARCH%\rxtxSerial.dll" "%PROGRAMFILES%\%PK_ID%\lib\"        /y /e >nul || goto :err_file
-copy  ".\version.txt"                   "%PROGRAMFILES%\%PK_ID%\version.txt" /y    >nul || goto :err_file
-copy  ".\ico\icon48.ico"                "%PROGRAMFILES%\%PK_ID%\icon.ico"    /y    >nul || goto :err_file
-
-
-echo Clear settings ...
-
-del /s /q "%APPDATA%\%PK_ID%\preferences*" >nul 2>nul
+xcopy ".\doc\*"                          "%PROGRAMFILES%\%_ID%\doc\"     /y /e >nul || goto :err_file
+xcopy ".\fwr\*.bin"                      "%PROGRAMFILES%\%_ID%\fwr\"     /y    >nul || goto :err_file
+xcopy ".\jar\*.jar"                      "%PROGRAMFILES%\%_ID%\jar\"     /y    >nul || goto :err_file
+xcopy ".\lib\win\%_ARCH%\LibusbJava.dll" "%PROGRAMFILES%\%_ID%\lib\"     /y    >nul || goto :err_file
+xcopy ".\lib\win\%_ARCH%\rxtxSerial.dll" "%PROGRAMFILES%\%_ID%\lib\"     /y    >nul || goto :err_file
+xcopy ".\version.txt"                    "%PROGRAMFILES%\%_ID%\"         /y    >nul || goto :err_file
+copy  ".\ico\icon48.ico"                 "%PROGRAMFILES%\%_ID%\icon.ico" /y    >nul || goto :err_file
 
 
 echo Create uninstall and menu shortcut ...
 
-set /a PK_APP_SIZE=0
-for /r "%PROGRAMFILES%\%PK_ID%" %%I in (*) do set /a PK_APP_SIZE+=%%~zI/1024
+set /a _SIZE=0
+for /r "%PROGRAMFILES%\%_ID%" %%I in (*) do set /a _SIZE+=%%~zI/1024
 
-> "%PROGRAMFILES%\%PK_ID%\setup.inf" (
+> "%PROGRAMFILES%\%_ID%\setup.inf" (
 	echo [Version]
 	echo Signature="$Windows NT$"
 	echo AdvancedINF=2.5
@@ -96,22 +98,22 @@ for /r "%PROGRAMFILES%\%PK_ID%" %%I in (*) do set /a PK_APP_SIZE+=%%~zI/1024
 	echo ProfileItems = AddMenu
 	echo.
 	echo [AddReg]
-	echo HKLM, "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\%PK_ID%", "ProductID"       , 0x00000000, "%PK_ID%"
-	echo HKLM, "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\%PK_ID%", "DisplayName"     , 0x00000000, "%PK_NAME% (x%ARCH:~-2%)"
-	echo HKLM, "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\%PK_ID%", "DisplayIcon"     , 0x00000000, "%%01%%\icon.ico"
-	echo HKLM, "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\%PK_ID%", "DisplayVersion"  , 0x00000000, "%PK_VERSION%"
-	echo HKLM, "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\%PK_ID%", "InstallLocation" , 0x00000000, "%%01%%"
-	echo HKLM, "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\%PK_ID%", "UninstallString" , 0x00000000, "%%11%%\rundll32.exe advpack.dll,LaunchINFSection ""%%01%%\setup.inf"",UnInstall,3"
-	echo HKLM, "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\%PK_ID%", "Publisher"       , 0x00000000, "%PK_PUBLISHER%"
-	echo HKLM, "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\%PK_ID%", "HelpLink"        , 0x00000000, "%PK_HELPLINK%"
-	echo HKLM, "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\%PK_ID%", "URLInfoAbout"    , 0x00000000, "%PK_HOMEPAGE%"
-	echo HKLM, "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\%PK_ID%", "EstimatedSize"   , 0x00010001, %PK_APP_SIZE%
-	echo HKLM, "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\%PK_ID%", "NoModify"        , 0x00010001, 1
-	echo HKLM, "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\%PK_ID%", "NoRepair"        , 0x00010001, 1
+	echo HKLM, "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\%_ID%", "ProductID"       , 0x00000000, "%_ID%"
+	echo HKLM, "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\%_ID%", "DisplayName"     , 0x00000000, "%_NAME% (x%_ARCH:~-2%)"
+	echo HKLM, "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\%_ID%", "DisplayIcon"     , 0x00000000, "%%01%%\icon.ico"
+	echo HKLM, "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\%_ID%", "DisplayVersion"  , 0x00000000, "%_VERSION%"
+	echo HKLM, "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\%_ID%", "InstallLocation" , 0x00000000, "%%01%%"
+	echo HKLM, "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\%_ID%", "UninstallString" , 0x00000000, "%%11%%\rundll32.exe advpack.dll,LaunchINFSection ""%%01%%\setup.inf"",UnInstall,3"
+	echo HKLM, "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\%_ID%", "Publisher"       , 0x00000000, "%_PUBLISHER%"
+	echo HKLM, "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\%_ID%", "HelpLink"        , 0x00000000, "%_HELPLINK%"
+	echo HKLM, "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\%_ID%", "URLInfoAbout"    , 0x00000000, "%_HOMEPAGE%"
+	echo HKLM, "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\%_ID%", "EstimatedSize"   , 0x00010001, %_SIZE%
+	echo HKLM, "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\%_ID%", "NoModify"        , 0x00010001, 1
+	echo HKLM, "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\%_ID%", "NoRepair"        , 0x00010001, 1
 	echo.
 	echo [AddMenu]
-	echo Name = "%PK_NAME%"
-	echo CmdLine = -1, "%%JAVA_HOME%%\bin", "javaw.exe -Djava.library.path=""%%01%%\lib"" -Duser.dir=""%%APPDATA%%\%PK_ID%"" -cp ""%%01%%\jar\*"" com.owon.vds.tiny.Main"
+	echo Name = "%_NAME%"
+	echo CmdLine = -1, "%%JAVA_HOME%%\bin", "javaw.exe -Djava.library.path=""%%01%%\lib"" -Duser.dir=""%%APPDATA%%\%_ID%"" -cp ""%%01%%\jar\*"" com.owon.vds.tiny.Main"
 	echo IconPath = -1, "%%01%%", "icon.ico"
 	echo WorkingDir = -1, "%%01%%"
 	echo.
@@ -121,18 +123,23 @@ for /r "%PROGRAMFILES%\%PK_ID%" %%I in (*) do set /a PK_APP_SIZE+=%%~zI/1024
 	echo RunPostSetupCommands = DelDirs
 	echo.
 	echo [DelReg]
-	echo HKLM, "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\%PK_ID%"
+	echo HKLM, "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\%_ID%"
 	echo.
 	echo [DelMenu]
-	echo Name="%PK_NAME%", 2
+	echo Name="%_NAME%", 2
 	echo.
 	echo [DelDirs]
-	echo %%11%%\rundll32.exe advpack.dll,DelNodeRunDLL32 "%%01%%"            ; deletes this folder
-	echo %%11%%\rundll32.exe advpack.dll,DelNodeRunDLL32 "%%16410%%\%PK_ID%" ; deletes folder in APPDATA
+	echo %%11%%\rundll32.exe advpack.dll,DelNodeRunDLL32 "%%01%%" ; deletes this folder
+	echo %%11%%\rundll32.exe advpack.dll,DelNodeRunDLL32 "%%16410%%\%_ID%" ; deletes folder in APPDATA
 	echo.
 )
 
-rundll32 advpack.dll,LaunchINFSection "%PROGRAMFILES%\%PK_ID%\setup.inf",DefaultInstall,3 || goto :err_register
+rundll32 advpack.dll,LaunchINFSection "%PROGRAMFILES%\%_ID%\setup.inf",DefaultInstall,3 || goto :err_register
+
+
+echo Clear previous settings ...
+
+del /s /q "%APPDATA%\%_ID%\preferences*" >nul 2>nul
 
 
 echo Done !
@@ -146,7 +153,7 @@ pause & exit /b
 pause & exit /b 1
 
 :err_architecture
-1>&2 echo Error: Architecture "%ARCH%" not supported.
+1>&2 echo Error: Architecture "%_ARCH%" not supported.
 pause & exit /b 1
 
 :err_env_appdata
@@ -156,19 +163,18 @@ pause & exit /b 1
 :err_java_path
 1>&2 echo Error: Java not found.
 1>&2 echo   Environement variable "JAVA_HOME" is not set or invalid.
-1>&2 echo   To install, visit  adoptopenjdk.net  or  java.com
+1>&2 echo   Visit adoptopenjdk.net to install Java
 1>&2 echo   If Java is already installed, search for setting JAVA_HOME
 pause & exit /b 1
 
 :err_java_run
-1>&2 echo Error: Failed to run Java. Try to reinstall.
+1>&2 echo Error: Failed to run Java. Try to reinstall Java.
 pause & exit /b 1
 
 :err_driver
 1>&2 echo Error: Failed to install the driver.
-1>&2 echo   Try to install the driver manually via device manager
+1>&2 echo   Try to install the driver manually via device manager once the device is plugged.
 1>&2 echo   Driver location: %CD%\lib\win
-start "" /b devmgmt.msc
 pause & exit /b 1
 
 :err_file
