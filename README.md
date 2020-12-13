@@ -36,27 +36,28 @@ Download and extract the latest release :
 
 https://github.com/florentbr/OWON-VDS1022/releases  
 
-#### Windows
+#### Windows 10, 8, 7, XP
 
 Right click on `install-win.cmd` and select "Run as administrator".  
-If the shortcut "OWON VDS1022 Oscilloscope" is not visible in the Windows menu, then restart your machine.  
 
 The script installs the drivers, copies the files, registers for uninstall and creates a menu entry.  
-User settings are stored in `%APPDATA%\OwonVdsTiny`  
+User settings are stored in `%APPDATA%\OwonVdsTiny`  once the application is launched.
+
+If the shortcut "OWON VDS1022 Oscilloscope" is not visible in the Windows menu, then restart your machine.  
 
 #### Linux
 
 Open a terminal window and execute `sudo bash install-linux.sh` .  
   
 The script builds a package according to the distribution and installs it with the default package manager.  
-User settings are stored in `$HOME/.owon-vds-tiny`  
+User settings are stored in `$HOME/.owon-vds-tiny`  once the application is launched.
 
 #### OSX
 
 Open a terminal window and execute `sudo bash install-mac.sh` .  
 
 The script simply creates/copies the files into `/Applications` .  
-User settings are stored in `$HOME/.owon-vds-tiny`  
+User settings are stored in `$HOME/.owon-vds-tiny`  once the application is launched.
 
 
 ## Calibration
@@ -64,6 +65,7 @@ User settings are stored in `$HOME/.owon-vds-tiny`
 The device can be calibrated either automatically (Home/Utility/Auto-Calibrate) or manually (F2).
 
 If you wish to calibrate the device manually then:
+* Press F2 to open the calibration dialog
 * Disconnect the probes
 * Select a x1 ratio and a DC coupling for each probe 
 * Select the targeted voltage to calibrate
@@ -80,6 +82,13 @@ The current calibration is stored in the user folder.
 
 ## Changes
 
+2020/12/13 (1.0.33-cf11)
+* added shortcut for normal sweep
+* fixed russian translation (thanks to LeonIndman)
+* fixed and improved file export (text, csv, xls)
+* fixes from update 1.0.33 (FFT Hz/Div, chartscreen clipping)
+* removed factory flash part from update 1.0.33
+* improved/fixed install scripts (files permissions for Linux)
 
 2020/06/10 (1.0.30-cf10)
 * added Italian translation (thanks to Marco Morelli)

@@ -324,10 +324,10 @@ add_files () {
 copy () {
 	if [[ "$1" == */ ]] || [[ -d "$1" ]] ; then
 		mkdir -p "$1"
-		cp -r "${@:2}" "$1"
+		cp --no-preserve=mode,ownership -r "${@:2}" "$1"
 	else
 		mkdir -p "$(dirname "$1")"
-		cp "${@:2}" "$1"
+		cp --no-preserve=mode,ownership "${@:2}" "$1"
 	fi
 }
 
