@@ -1,0 +1,81 @@
+2021/03/02 (1.0.33-cf12)
+* added single triggering in rolling mode (time base >= 100ms/div)
+* added x20 probe ratio
+* added input conversion option from volt to ampere
+* moved mark cursor labels next to the cursor for the selected input
+* removed Owon logo on the top left corner and increased trigger label size
+* enabled high DPI scaling on Windows 10 (-Dsun.java2d.dpiaware=false)
+* fixed german translation (thanks to km-linux)
+* fixed connection failure on Linux (issues #24 #23)
+* fixed install scripts (issue #16)
+
+2020/12/13 (1.0.33-cf11)
+* added shortcut for normal sweep
+* fixed russian translation (thanks to LeonIndman)
+* fixed and improved file export (text, csv, xls)
+* from official update 1.0.33: fixed FFT Hz/Div, chartscreen clipping and removed factory flash partition
+* improved/fixed install scripts (issue #13)
+
+2020/06/10 (1.0.30-cf10)
+* added Italian translation (thanks to Marco Morelli)
+* changed channel 1 factory color from red to green
+* changed default factory coupling from AC to DC
+* changed retore button to restore the saved settings instead of the factory settings
+* fixed trigger pulse/slope input width
+* removed unsupported install USB driver menu
+* improved/fixed install scripts (issues #4, #7, #8)
+
+2020/01/17 (1.0.30-cf9)
+* fixed horizontal zoom when stopped
+
+2020/01/13 (1.0.30-cf8)
+* fixed combobox popups disapearing once clicked (Windows)
+* improved install scripts
+
+2020/01/03 (1.0.30-cf7)
+
+* added librairies for ARM hardware (linux)
+* improved device stability (synchronised heartbeat, 1 job per command, deduplicated commands)
+* added new set of icons
+* improved dock layout and panes
+* improved Save/Pin wave pane
+* improved manual calibration dialog (F2)
+* merged save image / export operation to a single button/dialog
+* added buttons to change the color of the waves
+* added shortcuts: save/restore the current settings, zoom switch, full screen
+* added localized trigger status messages
+* fixed the code to support Java 8 and superior (Java 6 no longer supported)
+* fixed install scripts
+* fixed window size/position at startup
+* fixed single trigger triggered unexpectedly once initiated
+* fixed math/composite auto-set voltage
+* fixed scaling of the view (3 views / print preview)
+* fixed focus issues with dialogs/sliders
+* fixed mouse gesture labels
+
+2019/10/19
+
+* added support to Puppy Linux
+* fixed unsupported translucency by some OS
+* fixed reset operation on sliders
+* fixed english translation in the calibration dialog and re-factored load/export
+
+2019/09/23
+
+* fixed swallowed exception Assistive Technology not found
+* added missing window title
+* added shortcuts: single trigger, trigger level, offsets, coupling, inversion, reset ...
+* changed trigger limit to 200ms
+* fixed the voltage division not refreshed when changed via shortcut and not running
+* moved user files to user folder (preferences, settings, calibration ...) via property user.dir
+* changed loading of ressources to load them with a path relative to the jar file
+* disabled leave/stop confirmation while playing
+* disabled debug log by default
+* disabled the SCPI server by default
+* disabled dock animations
+* fixed help and tips
+* fixed the save image operation - forced default filter to PNG
+* fixed the marks container appearing as a second window in the task-bar
+* fixed notice dialog leading to a deadlock when the device is connected
+* fixed system properties crashing the app when launched on a non Windows OS
+* fixed the exception "LibusbJava.usb_set_configuration: Could not set config 1". Removed the unnecessary call to `usb_set_configuration`

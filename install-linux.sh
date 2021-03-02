@@ -3,38 +3,33 @@
 set -e
 pushd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null
 
-THIS_DIR=$(pwd)
-TEMP_DIR=$(readlink -f /tmp)
+_SRCDIR=$(pwd)
+_TMPDIR=$(readlink -f /tmp)
 
-PK_ID='owon-vds-tiny'
-PK_VERSION=$(<"$THIS_DIR/version.txt")
-PK_FNAME="OWON-VDS1022"
-PK_VENDOR='Copyright (C) Fujian Lilliput Optoelectronics Technology Co.,Ltd'
-PK_NAME='OWON VDS1022 Oscilloscope'
-PK_GENERICNAME='Oscilloscope'
-PK_USAGE='Analyze an electrical signal'
-PK_CATEGORIES='Electronics;Engineering'
-PK_SUMMARY='Application for the OWON VDS1022 oscilloscope'
-PK_CONTACT='florentbr@gmail.com'
-PK_HOMEPAGE='https://github.com/florentbr/Owon-VDS1022'
-PK_APP_DIR="/usr/share/$PK_ID"
-PK_LIB_DIR="/usr/lib/$PK_ID"
-PK_DESCRIPTION='Unofficial release with a few fixes and improvements:
- * New shortcuts: single trigger, trigger level, offsets, coupling, inversion, reset ...
- * Disabled annoying dock animations
- * Disabled leave/stop confirmation while recording/playing
- * ...'
-PK_PREINSTALL="
-rm -f /etc/udev/rules.d/*owon*.rules
+_ID='owon-vds-tiny'
+_VERSION=$(<version.txt)
+_FNAME="OWON-VDS1022"
+_VENDOR='Copyright (C) Fujian Lilliput Optoelectronics Technology Co.,Ltd'
+_NAME='OWON VDS1022 Oscilloscope'
+_GENERICNAME='Oscilloscope'
+_USAGE='Analyze an electrical signal'
+_CATEGORIES='Electronics;Engineering'
+_SUMMARY='Application for the OWON VDS1022 oscilloscope'
+_CONTACT='florentbr@gmail.com'
+_HOMEPAGE='https://github.com/florentbr/OWON-VDS1022'
+_DESCRIPTION='Modified software for the OWON VDS1022 oscilloscope'
+_PREINSTALL="
+rm -fr /usr/share/$_ID /usr/lib/$_ID || true
 "
-PK_POSTINSTALL="
+_POSTINSTALL="
 udevadm control --reload-rules
 udevadm trigger
-rm -f /home/*/.$PK_ID/preferences* || true
+rm -f /home/*/.$_ID/preferences* || true
 "
-PK_POSTREMOVE="
-rm -rf /home/*/.$PK_ID
+_POSTREMOVE="
+rm -fr /home/*/.$_ID
 "
+_PACKAGE=
 
 
 main () {
@@ -45,13 +40,15 @@ main () {
 	echo " Build package                                             "
 	echo "==========================================================="
 
+	echo 'Check environement ...'
+
 	local arch=$(dpkg --print-architecture 2>/dev/null || uname -m)
 	case "$arch" in
 		x86_64)   arch=amd64 ;;
 		i?86)     arch=i386  ;;
 		aarch64)  arch=arm64 ;;
 	esac
-	[ -d "$THIS_DIR/lib/linux/$arch" ] || raise "Architecture not supported: ${arch}"
+	[ -d "$_SRCDIR/lib/linux/$arch" ] || raise "Architecture not supported: ${arch}"
 
 	local packager
 	for packager in apt pacman dnf yum zypper ppm '' ; do
@@ -59,12 +56,12 @@ main () {
 		[ -x "$(command -v $packager)" ] && break
 	done
 
-	local builddir="$TEMP_DIR/oqosnrlfhwsbrfk"
+	local builddir="$_TMPDIR/oqosnrlfhwsbrfk"
 	rm -rf "$builddir"
 	install -d -m 755 "$builddir"
 	pushd "$builddir" >/dev/null
 
-	case "$packager" in
+	case $packager in
 		apt)             build-deb $arch ;;
 		pacman)          build-pac $arch ;;
 		dnf|zipper|yum)  build-rpm $arch ;;
@@ -75,28 +72,28 @@ main () {
 	popd >/dev/null
 	rm -rf "$builddir"
 
-	printf "\nPackage:\n ${PK_PACKAGE}\n\n"
+	printf "\nPackage:\n ${_PACKAGE}\n\n"
 
 
 	echo "==========================================================="
-	echo " Install package ${PK_PACKAGE##*/}                         "
+	echo " Install package ${_PACKAGE##*/}                         "
 	echo "==========================================================="
 
-	pushd "${PK_PACKAGE%/*}" >/dev/null
+	env -i /bin/bash -c 'type java >/dev/null 2>&1' || raise "Java not found!"
+
+	pushd "${_PACKAGE%/*}" >/dev/null
 
 	case "$packager" in
-		apt)     apt install --reinstall "$PK_PACKAGE" ;;
-		pacman)  pacman -U "$PK_PACKAGE"         ;;
-		dnf)     dnf install "$PK_PACKAGE"       ;;
-		zipper)  zipper install "$PK_PACKAGE"    ;;
-		yum)     yum install "$PK_PACKAGE"       ;;
-		ppm)     pkg -f install "$PK_PACKAGE"    ;;
-		*)       raise "Packager not supported"  ;;
+		apt)     apt install --reinstall "$_PACKAGE" ;;
+		pacman)  pacman -U "$_PACKAGE"               ;;
+		dnf)     dnf install "$_PACKAGE"             ;;
+		zipper)  zipper install "$_PACKAGE"          ;;
+		yum)     yum install "$_PACKAGE"             ;;
+		ppm)     pkg -f install "$_PACKAGE"          ;;
+		*)       raise "Packager not supported"      ;;
 	esac
 
 	popd >/dev/null
-
-	env -i /bin/bash -c 'type java >/dev/null 2>&1' || raise "Java not found!"
 
 	echo -e "\nDone!\n"
 
@@ -106,228 +103,223 @@ main () {
 build-deb () {
 	local arch=$1
 
-	PK_ARCH=$arch
-	PK_PACKAGE="$TEMP_DIR/$PK_FNAME-$PK_VERSION.$PK_ARCH.deb"
-	PK_RULES_DIR='/lib/udev/rules.d'
+	write_files "$arch" "lib/udev/rules.d"
 
-	add_files "$arch"
+	local size=$(du -s -k | egrep -o '^[0-9]+')
 
 	echo 'Build debian package ...'
 
-	write ./DEBIAN/control <<-EOF
-	Package: ${PK_ID}
-	Version: ${PK_VERSION}
-	Depends: default-jre, libc6 (>= 2.15)
+	write DEBIAN/control <<-EOF
+	Package: ${_ID}
+	Version: ${_VERSION}
+	Depends: default-jre, libusb-1.0-0, libc6 (>= 2.15)
 	Section: non-free/electronics
 	Priority: optional
-	Architecture: ${PK_ARCH}
-	Maintainer: <${PK_CONTACT}>
-	Vendor: ${PK_VENDOR}
-	Homepage: ${PK_HOMEPAGE}
-	Installed-Size: $(expr $PK_SIZE / 1024)
-	Description: ${PK_SUMMARY}
-	 ${PK_DESCRIPTION}
+	Architecture: ${arch}
+	Maintainer: <${_CONTACT}>
+	Vendor: ${_VENDOR}
+	Homepage: ${_HOMEPAGE}
+	Installed-Size: ${size}
+	Description: ${_SUMMARY}
+	 ${_DESCRIPTION}
 	EOF
 
-	write ./DEBIAN/preinst  +x <<< "#!/bin/bash${PK_PREINSTALL}"
-	write ./DEBIAN/postinst +x <<< "#!/bin/bash${PK_POSTINSTALL}"
-	write ./DEBIAN/postrm   +x <<< "#!/bin/bash${PK_POSTREMOVE}"
+	write DEBIAN/preinst  +x <<< "#!/bin/bash${_PREINSTALL}"
+	write DEBIAN/postinst +x <<< "#!/bin/bash${_POSTINSTALL}"
+	write DEBIAN/postrm   +x <<< "#!/bin/bash${_POSTREMOVE}"
 
-	rm -f $PK_PACKAGE
-	dpkg-deb -b -Zgzip . "$PK_PACKAGE" >/dev/null || exit 1
+	_PACKAGE="$_TMPDIR/$_FNAME-$_VERSION.$arch.deb"
+	rm -f $_PACKAGE
+	dpkg-deb -b -Zgzip . "$_PACKAGE" >/dev/null || exit 1
 }
 
 
 build-pac () {
 	local arch=$1
 
-	PK_ARCH=${arch/amd64/x86_64}
-	PK_PACKAGE="$TEMP_DIR/$PK_FNAME-$PK_VERSION.$PK_ARCH.pac"
-	PK_RULES_DIR='/usr/lib/udev/rules.d'
+	write_files "$arch" "usr/lib/udev/rules.d"
 
-	add_files "$arch"
+	local size=$(du -s -b | egrep -o '^[0-9]+')
+	arch=${arch/amd64/x86_64}
 
 	echo 'Build pacman package ...'
 
 	write .PKGINFO +x <<-EOF
-	pkgname = ${PK_ID}
-	pkgbase = ${PK_ID}
-	pkgver = ${PK_VERSION}
-	pkgdesc = ${PK_SUMMARY}
-	url = ${PK_HOMEPAGE}
+	pkgname = ${_ID}
+	pkgbase = ${_ID}
+	pkgver = ${_VERSION}
+	pkgdesc = ${_SUMMARY}
+	url = ${_HOMEPAGE}
 	builddate = $(date -u '+%s')
-	packager = ${PK_CONTACT}
-	size = ${PK_SIZE}
-	arch = ${PK_ARCH}
+	packager = ${_CONTACT}
+	size = ${size}
+	arch = ${arch}
 	depend = java-runtime
+	depend = libusb
 	EOF
 
 	write .INSTALL +x <<-EOF
-	pre_install () {${PK_PREINSTALL}}
-	post_install () {${PK_POSTINSTALL}}
-	post_remove () {${PK_POSTREMOVE}}
-	pre_upgrade () {${PK_PREINSTALL}}
-	post_upgrade () {${PK_POSTINSTALL}}
+	pre_install () {${_PREINSTALL}}
+	post_install () {${_POSTINSTALL}}
+	post_remove () {${_POSTREMOVE}}
+	pre_upgrade () {${_PREINSTALL}}
+	post_upgrade () {${_POSTINSTALL}}
 	EOF
 
-	rm -f "$PK_PACKAGE"
-	tar -czvf "$PK_PACKAGE" .PKGINFO .INSTALL * >/dev/null || exit 1
+	_PACKAGE="$_TMPDIR/$_FNAME-$_VERSION.$arch.pac"
+	rm -f "$_PACKAGE"
+	tar -czvf "$_PACKAGE" .PKGINFO .INSTALL * >/dev/null || exit 1
 }
 
 
 build-rpm () {
 	local arch=$1
 
-	PK_ARCH=${arch/amd64/x86_64}
-	PK_PACKAGE="$TEMP_DIR/$PK_FNAME-$PK_VERSION.$PK_ARCH.rpm"
-	PK_RULES_DIR='/usr/lib/udev/rules.d'
-
 	mkdir BUILD BUILDROOT RPMS SOURCES SPECS SRPMS
-	pushd ./BUILDROOT >/dev/null
+	pushd BUILDROOT >/dev/null
 
-	add_files "$arch"
+	write_files "$arch" "usr/lib/udev/rules.d"
+
+	local files=$(find -type f | egrep -o '/.*')
+	arch=${arch/amd64/x86_64}
 
 	popd >/dev/null
 
 	echo 'Build rpm package ...'
 
-	write "./SPECS/$PK_ID.spec" <<-EOF
-	Name: ${PK_ID}
-	Version: ${PK_VERSION/-*/}
-	Release: ${PK_VERSION/*-/}
-	Summary: ${PK_SUMMARY}
+	write "SPECS/$_ID.spec" <<-EOF
+	Name: ${_ID}
+	Version: ${_VERSION/-*/}
+	Release: ${_VERSION/*-/}
+	Summary: ${_SUMMARY}
 	Group: Applications/Engineering
 	License: Multiple
-	Vendor: ${PK_VENDOR}
-	URL: ${PK_HOMEPAGE}
-	Packager: ${PK_CONTACT}
-	Requires: jre, libc.so.6
+	Vendor: ${_VENDOR}
+	URL: ${_HOMEPAGE}
+	Packager: ${_CONTACT}
+	Requires: jre, libusb-1_0-0, libc.so.6
 	AutoReqProv: no
 	%define _binary_payload w6.gzdio
 	%description
-	${PK_DESCRIPTION}
+	${_DESCRIPTION}
 	%files
-	${PK_FILES}
-	%pre -p /bin/bash ${PK_PREINSTALL}
-	%post -p /bin/bash ${PK_POSTINSTALL}
-	%postun -p /bin/bash ${PK_POSTREMOVE}
+	${files}
+	%pre -p /bin/bash ${_PREINSTALL}
+	%post -p /bin/bash ${_POSTINSTALL}
+	%postun -p /bin/bash ${_POSTREMOVE}
 	EOF
 
-	rpmbuild -bb \
-	  --define "_topdir $PWD" \
-	  --buildroot "$PWD/BUILDROOT" \
-	  --target "$PK_ARCH" "./SPECS/$PK_ID.spec" \
-	  --noclean --nocheck --quiet \
-	  > /dev/null || exit 1
+	rpmbuild -bb\
+	 --define "_topdir $PWD"\
+	 --buildroot "$PWD/BUILDROOT"\
+	 --target "$arch" "SPECS/$_ID.spec"\
+	 --noclean --nocheck --quiet\
+	 > /dev/null || exit 1
 
-	rm -f "$PK_PACKAGE"
-	mv ./RPMS/*/*.rpm "$PK_PACKAGE" || exit 1
+	_PACKAGE="$_TMPDIR/$_FNAME-$_VERSION.$arch.rpm"
+	rm -f "$_PACKAGE"
+	mv RPMS/*/*.rpm "$_PACKAGE" || exit 1
 }
 
 
 build-pet () {
 	local arch=$1
 
-	PK_ARCH=$arch
-	PK_PACKAGE="$TEMP_DIR/$PK_FNAME-$PK_VERSION.$PK_ARCH.pet"
-	PK_RULES_DIR='/lib/udev/rules.d'
+	mkdir "$_FNAME-$_VERSION.$arch"
+	pushd "$_FNAME-$_VERSION.$arch" >/dev/null
 
-	mkdir "$PK_FNAME-$PK_VERSION.$PK_ARCH"
-	pushd "$PK_FNAME-$PK_VERSION.$PK_ARCH" >/dev/null
+	write_files "$arch" "lib/udev/rules.d"
 
-	add_files "$arch"
+	local size=$(du -s -k | egrep -o '^[0-9]+')
 
 	echo 'Build pet package ...'
 
-	local f01=$PK_FNAME-$PK_VERSION.$PK_ARCH  #pkgname
-	local f02=$PK_FNAME  #nameonly
-	local f03=${PK_VERSION}  #version
+	local f01=$_FNAME-$_VERSION.$arch  #pkgname
+	local f02=$_FNAME  #nameonly
+	local f03=$_VERSION  #version
 	local f04=  #pkgrelease
 	local f05=  #category
-	local f06=$(expr $PK_SIZE / 1024)K  #size
+	local f06=${size}K  #size
 	local f07=  #path
-	local f08=$PK_FNAME-$PK_VERSION.$PK_ARCH.pet  #fullfilename
-	local f09=+default-jre,+libc6  #dependencies
-	local f10=$PK_SUMMARY  #description
+	local f08=$_FNAME-$_VERSION.$arch.pet  #fullfilename
+	local f09=+default-jre,+libusb-1.0,+libc6  #dependencies
+	local f10=$_SUMMARY  #description
 	local f11=  #compileddistro
 	local f12=  #compiledrelease
 	local f13=  #repo
 
 	write pet.specs <<< "$f01|$f02|$f03|$f04|$f05|$f06|$f07|$f08|$f09|$f10|$f11|$f12|$f13|"
-	write pinstall.sh +x <<< "${PK_PREINSTALL}${PK_POSTINSTALL}"
-	write puninstall.sh +x <<< "${PK_POSTREMOVE}"
+	write pinstall.sh +x <<< "${_POSTINSTALL}"  # post-install
+	write puninstall.sh +x <<< "${_POSTREMOVE}"  # post-uninstall
 
 	popd >/dev/null
 
-	rm -f "$PK_PACKAGE"
-	tar -czvf "$PK_PACKAGE" * >/dev/null
-	md5sum -b "$PK_PACKAGE" | cut -z -c 1-32 | tr -d '\0' >> "$PK_PACKAGE"
+	_PACKAGE="$_TMPDIR/$_FNAME-$_VERSION.$arch.pet"
+	rm -f "$_PACKAGE"
+	tar -czvf "$_PACKAGE" * >/dev/null
+	md5sum -b "$_PACKAGE" | cut -z -c 1-32 | tr -d '\0' >> "$_PACKAGE"
 }
 
 
-add_files () {
+write_files () {
 	local arch=$1
+	local rulesdir=$2
+	# local rulesdir=$(find {,usr/}lib/udev/rules.d 2>/dev/null | head -1)
 
-	echo 'Add usb permissions ...'
+	echo 'Add program files ...'
 
-	write ".$PK_RULES_DIR/70-$PK_ID.rules" <<-EOF
-	SUBSYSTEMS=="usb", ATTRS{idVendor}=="5345", ATTRS{idProduct}=="1234", MODE="0666"
-	EOF
+	copy "$_SRCDIR"/{fwr,jar,doc,version.txt} "usr/share/$_ID/"
+	copy "$_SRCDIR/ico/icon48.png" "usr/share/pixmaps/$_ID.png"
+	copy "$_SRCDIR/lib/linux/$arch"/* "usr/lib/$_ID/"
 
-	echo 'Add application files ...'
-
-	copy ".$PK_LIB_DIR/" "$THIS_DIR/lib/linux/$arch"/*
-	copy ".$PK_APP_DIR/" "$THIS_DIR/fwr" "$THIS_DIR/jar" "$THIS_DIR/doc" "$THIS_DIR/version.txt"
-
-	write "./usr/bin/$PK_ID" +x <<-EOF
+	write "usr/bin/$_ID" +x <<-EOF
 	#!/bin/bash
-	export LD_LIBRARY_PATH=$PK_LIB_DIR
-	java -Djava.library.path='$PK_LIB_DIR' -Duser.dir="\$HOME/.$PK_ID" -cp '$PK_APP_DIR/jar/*' com.owon.vds.tiny.Main
+	export LD_LIBRARY_PATH=/usr/lib/$_ID
+	java -Djava.library.path='/usr/lib/$_ID' -Duser.dir="\$HOME/.$_ID" -cp '/usr/share/$_ID/jar/*' com.owon.vds.tiny.Main
 	EOF
 
-	echo 'Add launcher ...'
-
-	copy "./usr/share/pixmaps/$PK_ID.png" "$THIS_DIR/ico/icon48.png"
-
-	write "./usr/share/applications/$PK_ID.desktop" <<-EOF
+	write "usr/share/applications/$_ID.desktop" <<-EOF
 	[Desktop Entry]
-	Name=${PK_NAME}
-	GenericName=${PK_GENERICNAME}
-	Comment=${PK_USAGE}
-	Exec=${PK_ID}
-	Icon=${PK_ID}
+	Name=${_NAME}
+	GenericName=${_GENERICNAME}
+	Comment=${_USAGE}
+	Exec=${_ID}
+	Icon=${_ID}
 	Terminal=false
 	Type=Application
-	Categories=${PK_CATEGORIES};
+	Categories=${_CATEGORIES};
 	StartupWMClass=com-owon-vds-tiny-Main
 	EOF
 
-	write "./usr/share/appdata/$PK_ID.appdata.xml" <<-EOF
+	write "usr/share/appdata/$_ID.appdata.xml" <<-EOF
 	<?xml version="1.0" encoding="UTF-8"?>
 	​<component type="desktop">
-	​  <id>${PK_ID}</id>
-	​  <name>${PK_NAME}</name>
-	​  <summary>${PK_SUMMARY}</summary>
-	​  <description><p>${PK_DESCRIPTION}</p></description>
-	​  <launchable type="desktop-id">${PK_ID}.desktop</launchable>
-	​  <url type="homepage">${PK_HOMEPAGE}</url>
-	​  <provides><binary>${PK_ID}</binary></provides>
-	  <update_contact>${PK_CONTACT}</update_contact>
+	​  <id>${_ID}</id>
+	​  <name>${_NAME}</name>
+	​  <summary>${_SUMMARY}</summary>
+	​  <description><p>${_DESCRIPTION}</p></description>
+	​  <launchable type="desktop-id">${_ID}.desktop</launchable>
+	​  <url type="homepage">${_HOMEPAGE}</url>
+	​  <provides><binary>${_ID}</binary></provides>
+	  <update_contact>${_CONTACT}</update_contact>
 	​</component>
 	EOF
 
-	PK_FILES=$(find -type f | egrep -o '/.*')
-	PK_SIZE=$(du -s -b | egrep -o '^[0-9]+')
+	echo 'Add usb permissions ...'
+
+	write "$rulesdir/70-$_ID.rules" <<-EOF
+	SUBSYSTEMS=="usb", ATTRS{idVendor}=="5345", ATTRS{idProduct}=="1234", MODE="0666"
+	EOF
 }
 
 
 copy () {
-	if [[ "$1" == */ ]] || [[ -d "$1" ]] ; then
-		mkdir -p "$1"
-		cp --no-preserve=mode,ownership -r "${@:2}" "$1"
+	if [[ "${!#}" == */ ]] || [[ -d "${!#}" ]] ; then
+		mkdir -p "${!#}"
+		cp --no-preserve=mode,ownership -r "$@"
 	else
-		mkdir -p "$(dirname "$1")"
-		cp --no-preserve=mode,ownership "${@:2}" "$1"
+		mkdir -p "$(dirname "${!#}")"
+		cp --no-preserve=mode,ownership "$@"
 	fi
 }
 
