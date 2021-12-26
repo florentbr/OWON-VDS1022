@@ -1,3 +1,30 @@
+
+2021/12/26 (1.1.1-cf13)
+* upgraded to official release v1.1.1 (new firmware, some internal changes on triggers)
+* added a python library to directly communicate with the device
+* added arm64 support for macOS (thanks to Jesse Pangburn)
+* added Math channel cursors and measures
+* added x50 and x500 probe rates
+* added a vertical cursor to directly adjust the pulse width on the chart
+* added a vertical mark cursor to measure the duty cycle and phase angle
+* added a shortcut to close Dialogs and Dock (Esc key)
+* added a shortcut to set the trigger level at 50% (T key)
+* disabled trigger level scaling on voltbase change
+* improved/upscaled icons and images for FHD display
+* improved measures readability (size / color / number of decimals)
+* removed the unused librxtx dependency which was slowing down the Display menu
+* dock fields can now be edited (pulse width, holdholf and current)
+* moved MUTLI setting from Utility to Channel menu
+* removed unnecessary menu "Assist Set"
+* defined a default size for the open/save dialog
+* fixed auto-calibration and improved calibration dialog (F2)
+* fixed exception when trying to zoom an empty channel
+* fixed labels highlight and background in the charts. The fonts are no longer scaled-down.
+* fixed mark cursors not refreshed after reset and autoset
+* fixed drag right restriction on the position when acquisition is stopped
+* fixed trigger cursor not appearing on second click
+* improved installers (reduced number of arguments to launch the app)
+
 2021/03/02 (1.0.33-cf12)
 * added single triggering in rolling mode (time base >= 100ms/div)
 * added x20 probe ratio
@@ -7,6 +34,7 @@
 * enabled high DPI scaling on Windows 10 (-Dsun.java2d.dpiaware=false)
 * fixed german translation (thanks to km-linux)
 * fixed connection failure on Linux (issues #24 #23)
+* fixed sun.misc.Cleaner exception with Java 11
 * fixed install scripts (issue #16)
 
 2020/12/13 (1.0.33-cf11)
