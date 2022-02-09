@@ -2,12 +2,15 @@
 ### Java
 
 from http://files.owon.com.cn/software/pc/OWON_VDS_C2_Setup.zip :  
- * OWON_VDS_C2_1.0.X_Setup.exe\plugins\com.owon.vds.tiny_1.0.X.jar  
- * OWON_VDS_C2_1.0.X_Setup.exe\plugins\com.owon.vds.foundation_1.0.0.jar  
+ * OWON_VDS_C2_x.x.x_Setup.exe\plugins\com.owon.vds.tiny_x.x.x.jar  
+ * OWON_VDS_C2_x.x.x_Setup.exe\plugins\com.owon.vds.foundation_x.x.x.jar  
+
 from https://sourceforge.net/projects/libusbjava/files/libusbjava-snapshots/20090517 :  
  * ch.ntb.usb-0.5.9.jar  
+
 from https://github.com/google/gson :  
  * gson-2.7.0.jar  
+
 from http://jexcelapi.sourceforge.net :  
  * jxl-2.6.6.jar  
 
@@ -24,17 +27,17 @@ http://java-decompiler.github.io
 ### FPGA Firmware
 
 from http://files.owon.com.cn/software/pc/OWON_VDS_C2_Setup.zip :  
- * OWON_VDS_C2_1.0.X_Setup.exe\fpga\vds1022\VDS1022_FPGAV1_VX.X.bin  
- * OWON_VDS_C2_1.0.X_Setup.exe\fpga\vds1022\VDS1022_FPGAV2_VX.X.bin  
- * OWON_VDS_C2_1.0.X_Setup.exe\fpga\vds1022\VDS1022_FPGAV3_VX.X.bin  
+ * OWON_VDS_C2_x.x.x_Setup.exe\fpga\vds1022\VDS1022_FPGAVx_Vx.x.bin  
 
 
-### Native Windows / libusb 0.1 / Microsoft C Runtime 2010
+### Native Windows / libusbJava 0.1
 
 from http://files.owon.com.cn/software/pc/OWON_VDS_C2_Setup.zip :  
  * USBDRV\win10_win8_win7_vista\*  
+
 from https://sourceforge.net/projects/libusbjava/files/libusbjava-snapshots/20090517 :  
  * LibusbJava.dll  
+
 from Microsoft Visual C++ 2010 Redistributable :  
  * msvcr100.dll  
  * msvcp100.dll  
@@ -42,12 +45,14 @@ from Microsoft Visual C++ 2010 Redistributable :
 sources:  
 https://sourceforge.net/p/libusbjava/code/HEAD/tree/branches/libusb_api_0v1/LibusbJava/  
 https://www.catalog.update.microsoft.com/Search.aspx?q=C%2B%2B%202010%20Redistributable  
+https://sourceforge.net/p/libusb-win32/code/HEAD/tree/trunk/  
 
 
-## Native Linux / libusbJava 0.1
+### Native Linux / libusbJava 0.1
 
 from https://packages.debian.org/sid/libusb-java-lib :  
  * libusbJava.so.0.8  
+
 from https://pkgs.org/download/libusb-compat :  
  * libusb-0.1.so.4.4.4  
 
@@ -66,12 +71,14 @@ https://github.com/NixOS/patchelf
 https://amir.rachum.com/blog/2016/09/17/shared-libraries  
 
 
-## Native Mac OS / libusbJava 0.1
+### Native Mac OS / libusbJava 0.1
 
 from https://formulae.brew.sh/formula/libusb-compat :  
  * libusb-0.1.4.dylib  
+
 from https://formulae.brew.sh/formula/libusb :  
  * libusb-1.0.0.dylib  
+
 from https://salsa.debian.org/java-team/libusb-java :
  * libusbJava.dylib
 

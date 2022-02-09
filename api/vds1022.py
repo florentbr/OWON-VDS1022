@@ -187,10 +187,10 @@ class CMD:
     class Cmd:
 
         def __init__(self, name, address, size, status):
-            self.name = name        #: str: command name for debug
+            self.name    = name     #: str: command name for debug
             self.address = address  #: str: command address (4 bytes)
-            self.size = size        #: int: payload size (1 byte)
-            self.status = status    #: int: expected response status (char)
+            self.size    = size     #: int: payload size (1 byte)
+            self.status  = status   #: int: expected response status (char)
 
         def pack(self, value):
             try:
@@ -322,12 +322,12 @@ class BokehChart:
         "var v=tick, n=-1;"\
         "if (v>=60) return ((v/60)|0)+':'+(+(100+v%60).toFixed(2)+'').substring(1);"\
         "for (; v && !(v|0); ++n) v*=1e3;"\
-        "return v && +v.toPrecision(5)+' '+('mµnp'[n]||'')+'s';"
+        "return v && +v.toPrecision(5)+('mµnp'[n]||'')+'s';"
 
     _FORMATTER_Y =\
         "var v=tick, n=-1;"\
         "for (; v && !(v|0); ++n) v*=1e3;"\
-        "return v && +v.toPrecision(5)+' '+('mµnp'[n]||'')+'v';"
+        "return v && +v.toPrecision(5)+('mµnp'[n]||'')+'v';"
 
 
     def __init__(self, data, opts, rollover=None):
@@ -538,14 +538,14 @@ class MatplotlibChart:
             while x and not int(x):
                 x *= 1e3
                 n += 1
-            return '{0:g} {1}s'.format(round(x, 4), ' mµnp'[n] if n else '') if x else '0'
+            return '{0:g}{1}s'.format(round(x, 4), ' mµnp'[n] if n else '') if x else '0'
 
         def format_volt(x, pos):
             n = 0
             while x and not int(x):
                 x *= 1e3
                 n += 1
-            return '{0:g} {1}v'.format(round(x, 4), ' mµnp'[n] if n else '') if x else '0'
+            return '{0:g}{1}v'.format(round(x, 4), ' mµnp'[n] if n else '') if x else '0'
 
         dpi = plt.rcParams['figure.dpi']
         fig = plt.figure(figsize=(width / dpi, height / dpi), **fig_opts)
@@ -872,7 +872,7 @@ class Frame:
         vbase, vtop = self.levels()
         vamp = vtop - vbase
 
-        if abs(vrms - vavg) > 0.01 :
+        if vamp / (ADC_RANGE * self.sy) > 0.05 :
             yf = np.fft.rfft(y - vavg)
             i = np.absolute(yf).argmax()
             freq = i / ((len(self.buffer) - self.offset) * self.sx)
@@ -2327,6 +2327,7 @@ class VDS1022:
 
             while True:
                 try:
+                    gc.collect(0)
                     self._bulk_write(cmd_get)
                     ret = self._bulk_read(buffer)
                     CMD.GET_DATA.log(cmd_arg, ret)
@@ -2350,6 +2351,7 @@ class VDS1022:
             if hits > 1:
                 calibration[ical][chl][vb] = max(cal, cal_prev)
                 print("CH%d %s %sV: %s" % (chl + 1, name, VOLTRANGES[vb], cal))
+                gc.collect(0)
                 return True
 
             cal_prev = cal
@@ -2403,6 +2405,7 @@ class VDS1022:
             self.voltoffset[chl] = 0
             self.voltrange[chl] = VOLTRANGES[vb]
 
+            gc.collect(0)
             self._push_channel(chl)
             self._push(CMD.SET_EDGE_LEVEL[chl], pack('bb', level + 5, level - 5))
             self._push(CMD.SET_FREQREF[chl], pack('b', level))
@@ -2414,6 +2417,7 @@ class VDS1022:
 
             while True:
                 try:
+                    gc.collect(0)
                     self._bulk_write(cmd_get)
                     ret = self._bulk_read(buffer)
                     if ret == READ_SIZE:

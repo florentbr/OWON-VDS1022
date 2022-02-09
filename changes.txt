@@ -1,4 +1,16 @@
 
+2022/02/09 (1.1.1-cf14)
+* improved the record/play dialog
+* added shortcuts info on tooltips
+* added native libraries for linux armhf
+* improved logs for debug
+* fixed russian translation (thanks to LeonIndman)
+* fixed zoom failing with Java 17
+* fixed USB connexion failing on replug
+* fixed install on fedora (thanks to Ashok Shankar Das)
+* fixed lag while scrolling directly over the timebase
+* fixed measure exception (#47)
+
 2021/12/26 (1.1.1-cf13)
 * upgraded to official release v1.1.1 (new firmware, some internal changes on triggers)
 * added a python library to directly communicate with the device

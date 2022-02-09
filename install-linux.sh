@@ -8,7 +8,6 @@ _TMPDIR=$(readlink -f /tmp)
 
 _ID='owon-vds-tiny'
 _NAME='OWON VDS1022'
-_FULLNAME='OWON VDS1022 Oscilloscope'
 _GENERICNAME='Oscilloscope'
 _SUMMARY='Application for the OWON VDS1022 oscilloscope'
 _VERSION=$(<version.txt)
@@ -71,11 +70,11 @@ main () {
 	rm -rf "${tmpdir}"
 
 	chmod 0755 "$_PACKAGE"
-	printf "\nPackage:\n ${_PACKAGE}\n\n"
+	printf "\nPackage:\n${_PACKAGE}\n\n"
 
 
 	echo "==========================================================="
-	echo " Install package ${_PACKAGE##*/}                           "
+	echo " Install package ${_PACKAGE##*/}"
 	echo "==========================================================="
 
 	case "$packager" in
@@ -192,7 +191,7 @@ build-rpm () {
 
 	write_files "$arch"
 
-	local files=$(find -type f | egrep -o '/.*')
+	local files=$(find ! -type d | egrep -o '/.*')
 
 	case "$arch" in
 		amd64|x86_64)   arch=x86_64  ;;
@@ -213,7 +212,7 @@ License: Multiple
 Vendor: ${_VENDOR}
 URL: ${_HOMEPAGE}
 Packager: na <na>
-Requires: libusb-1_0-0, libc.so.6, jre
+Requires: libusb1, libc.so.6, jre
 AutoReqProv: no
 %define _binary_payload w6.gzdio
 %description
@@ -314,7 +313,7 @@ Comment=${_SUMMARY}
 Icon=$_ID
 Terminal=false
 Type=Application
-Exec=java -cp '/opt/$_ID/lib/*' com.owon.vds.tiny.Main
+Exec=java -cp "/opt/$_ID/lib/*" com.owon.vds.tiny.Main
 Categories=${_CATEGORIES};
 StartupWMClass=com-owon-vds-tiny-Main
 EOF

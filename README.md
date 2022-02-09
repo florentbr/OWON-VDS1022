@@ -15,7 +15,7 @@ This software is an unofficial release for the VDS1022 with a few improvements :
 * Added buttons to store/restore the current settings while keeping the same calibration
 * Added a x20, x50 and x500 probe ratio
 * Improved the device stability and interface
-* Disabled the leave/stop confirmation while recording/playing
+* Simplified the record/play dialog
 * Merged the save image / export operation to a single button/dialog
 * Many fixes (see [change list](changes.txt))
 
@@ -31,9 +31,8 @@ This device is also sold under different brands:
 ## Requirements
 
 Java Runtime Environement 8 (1.8) or superior is required. Java 11 is recommended especially if you have an HDPI display.  
-To check if Java is installed with the minimum version, run `java -version` in a console.  
-Installers are available at https://adoptopenjdk.net/releases.html (OpenJDK 11 JRE ~50Mb).  
-It should work just fine on any computer/laptop as long as there's 200Mb of free RAM.  
+Installers are available at https://adoptium.net/releases.html (OpenJDK 11 JRE ~50Mb).  
+It should work just fine on any computer/laptop as long as there's 200Mb of free RAM.
 
 
 ## Install
@@ -49,8 +48,8 @@ Right click on `install-win.cmd` and select "Run as administrator".
 The script installs the driver, copies the files, registers for uninstall and creates a menu entry.  
 User settings are stored in `%APPDATA%\OWON VDS1022`.  
 
-To debug, run `%PROGRAMFILES%\OWON VDS1022\launch.cmd`.  
-To fully uninstall, open your application manager and select "OWON VDS1022"  
+To debug, run `%PROGRAMFILES%\OWON VDS1022\launch.cmd` or `%PROGRAMFILES(X86)%\OWON VDS1022\launch.cmd`.  
+To fully uninstall, open your application manager and select "OWON VDS1022" .  
 
 #### Linux (Debian based, Arch based, Puppy, Fedora ...)
 
@@ -106,7 +105,7 @@ dev.set_timerange('20ms')
 dev.set_channel(CH1, range='50v', coupling='DC', offset='0v', probe='x10')
 
 for ch1, ch2 in dev.pull_iter(freq=1, autorange=True) :
-    print('rms:%s' % ch1.rms())
+    print('Vrms:%s' % ch1.rms())
 ```
 
 Plotting in a Jupyter notebook:
@@ -118,7 +117,7 @@ dev = VDS1022(debug=False)
 dev.set_timerange('5ms')
 dev.set_channel(CH1, range='10v', coupling=DC, offset=0, probe='x10')
 dev.set_channel(CH2, range='10v', coupling=DC, offset=0, probe='x10')
-dev.set_trigger(CH1, EDGE, RISE, position=0.5, level='2.5v', sweep=ONCE)
+dev.set_trigger(CH1, EDGE, RISE, position=0.5, level='0v', sweep=ONCE)
 frames = dev.pull()
 frames.plot()
 ```

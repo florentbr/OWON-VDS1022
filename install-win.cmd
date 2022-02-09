@@ -4,7 +4,6 @@ if [%1] == [goto] goto %2
 
 set _ID=owon-vds-tiny
 set _NAME=OWON VDS1022
-set _FULLNAME=OWON VDS1022 Oscilloscope
 set _DEVICE={eb781aaf-9c70-4523-a5df-642a87eca567}
 set _PUBLISHER=Fujian Lilliput Optoelectronics Technology Co.,Ltd
 set _HOMEPAGE=https://github.com/florentbr/Owon-VDS1022
@@ -37,12 +36,12 @@ find /c /i "%_DEVICE%" "%SYSTEMROOT%\INF\oem*.inf" >nul || (
 )
 
 
-echo Try locate Java from JAVA_HOME environment variables ...
+echo Try locate Java from JAVA_HOME environment variable ...
 
 set "_JREDIR=%%JAVA_HOME%%\bin"
 call "%_JREDIR%\java.exe" -version 2>nul && goto :end_locate_java
 
-echo Try locate Java from PATH environment variables ...
+echo Try locate Java from PATH environment variable ...
 
 for %%i in (java.exe) do for %%j in ("%%~dp$_PATH:i.") do set "_JREDIR=%%~fj"
 call "%_JREDIR%\java.exe" -version 2>nul || goto :err_java
@@ -60,9 +59,10 @@ call echo %_JREDIR%\java.exe
 
 echo Check Java bitness ...
 
-if /i "%PROCESSOR_ARCHITECTURE%" == "amd64" call "%_JREDIR%\java.exe" -XshowSettings -version 2>&1 | find "os.arch = x86" >nul && (
+if /i "%PROCESSOR_ARCHITECTURE%" neq "amd64" goto :end_bitness_java
+call "%_JREDIR%\java.exe" -XshowSettings -version 2>&1 | find "os.arch = x86" >nul && (
 	echo Java is 32 bits, switching to x86 install ...
-	%SYSTEMROOT%\SysWOW64\cmd.exe /d /c %0 goto :end_bitness_java
+	%SYSTEMROOT%\SysWOW64\cmd.exe /d /c call %0 goto :end_bitness_java
 	popd & goto :eof
 )
 
@@ -82,8 +82,8 @@ del /q "%LOCALAPPDATA%\%_NAME%\preferences*" 2>nul >nul
 
 echo Install Microsoft C Runtime 2010 Library dependency ...
 
-xcopy "lib\win\%_ARCH%\msvcp100.dll" "%SYSTEMROOT%\System32\" /y /d >nul || goto :err_file
-xcopy "lib\win\%_ARCH%\msvcr100.dll" "%SYSTEMROOT%\System32\" /y /d >nul || goto :err_file
+xcopy "lib\win\%_ARCH%\msvcp100.dll" "%SYSTEMROOT%\System32\" /y /d >nul
+xcopy "lib\win\%_ARCH%\msvcr100.dll" "%SYSTEMROOT%\System32\" /y /d >nul
 
 
 echo Install in %PROGRAMFILES%\%_NAME% ...
@@ -101,7 +101,7 @@ xcopy "ico\icon.ico"                   "%PROGRAMFILES%\%_NAME%\"     /y       >n
 )
 
 > "%PROGRAMFILES%\%_NAME%\uninstall.cmd" (
-	echo if /i "%%PROCESSOR_ARCHITECTURE%%" neq "%_ARCH%" %SYSTEMROOT%\SysWOW64\cmd.exe /d /c %%0 ^& goto :eof
+	echo if /i "%%PROCESSOR_ARCHITECTURE%%" neq "%_ARCH%" %SYSTEMROOT%\SysWOW64\cmd.exe /d /c call %%0 ^& goto :eof
 	echo @set PATH=%SYSTEMROOT%\System32;%SYSTEMROOT%\Sysnative;
 	echo @if not defined LOCALAPPDATA set LOCALAPPDATA=%%APPDATA%%
 	echo @for %%%%f in ^(%SYSTEMROOT%\INF\oem*.inf^) do @find /c /i "%_DEVICE%" %%%%f ^>nul ^&^& set OEM=%%%%~nxf
@@ -141,7 +141,7 @@ for /r "%PROGRAMFILES%\%_NAME%" %%i in (*) do set /a _SIZE+=%%~zi/1024
 	echo HKLM, "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\%_NAME%", NoRepair       , 0x00010001, 1
 	echo.
 	echo [AddMenu]
-	echo Name = "%_FULLNAME%", 0
+	echo Name = "%_NAME%", 0
 	echo CmdLine = -1, "%_JREDIR%", "javaw.exe -Dsun.java2d.dpiaware=false -cp lib\* com.owon.vds.tiny.Main"
 	echo IconPath = -1, "%%01%%", "icon.ico"
 	echo WorkingDir = -1, "%%01%%"
@@ -154,12 +154,12 @@ for /r "%PROGRAMFILES%\%_NAME%" %%i in (*) do set /a _SIZE+=%%~zi/1024
 	echo HKLM, "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\%_NAME%"
 	echo.
 	echo [DelMenu]
-	echo Name = "%_FULLNAME%", 2
+	echo Name = "%_NAME%", 2
 	echo.
 )
 
 rundll32 advpack.dll,LaunchINFSection "%PROGRAMFILES%\%_NAME%\setup.inf",DefaultInstall,2 || goto :err_register
-dir /b "%ALLUSERSPROFILE%\Microsoft\Windows\Start Menu\Programs\%_FULLNAME%.lnk" 2>nul >nul || goto :err_register
+dir /b "%ALLUSERSPROFILE%\Microsoft\Windows\Start Menu\Programs\%_NAME%.lnk" 2>nul >nul || goto :err_register
 
 
 echo.
