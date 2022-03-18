@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
 """
-This module provides an API to communicate directly with the OWON VDS1022
-oscilloscope.
+This module provides an API to communicate directly with 
+the OWON VDS1022 oscilloscope.
 """
 
 import binascii
-import cmath
 import collections
 import functools
 import gc
@@ -19,10 +19,10 @@ import sys
 import threading
 import time
 
-from bisect import bisect_left
 from array import array
+from bisect import bisect_left
 from copy import copy, deepcopy
-from math import floor, ceil, log10, copysign, sqrt
+from math import floor, ceil, log2, log10, copysign, sqrt
 from struct import Struct, pack, unpack_from
 
 assert sys.version_info >= (3, 5), "requires Python 3.5 or newer"
@@ -34,7 +34,6 @@ try:
 except ImportError as ex:
     raise ImportError('Missing dependencies. Required: '
                       'pyusb numpy pandas bokeh') from ex
-
 
 __all__ = (
     'VDS1022',
@@ -57,7 +56,7 @@ DEBUG = False
 
 MACHINE_NAME = 'VDS1022'
 
-FIRMWARE_DIR = path.normpath(_dir + r'/../fwr')
+FIRMWARE_DIR = path.normpath(_dir + r'/fwr')
 
 CHANNELS = 2  #: Number of channels
 
@@ -118,7 +117,7 @@ ADC_RANGE = 250   # sample range
 GAIN = 0  # Gain (correction applyed for a measured signal)
 AMPL = 1  # Zero amplitude (correction applied for a 0v signal with no voltage offset)
 COMP = 2  # Zero compensation (correction applied for a 0v signal with an offset voltage)
-HTP_ERR = 8  # Horizontal trigger position correction
+HTP_ERR = 10  # Horizontal trigger position correction
 
 USB_VENDOR_ID = 0x5345
 USB_PRODUCT_ID = 0x1234
@@ -156,7 +155,7 @@ FLASH_SIZE = 2002
 #   Send (little endian)
 #     Offset  Size   Field
 #     0       4      address
-#     4       1      value size (1, 2, 4)
+#     4       1      value size (1, 2 or 4)
 #     5       -      value (1, 2 or 4 bytes)
 #   Receive 5 bytes
 #     Offset  Size   Field
@@ -176,8 +175,8 @@ FLASH_SIZE = 2002
 #     0       1     channel (CH1=0x00 CH2=0x01)
 #     1       4     time_sum (used by frequency meter)
 #     5       4     period_num (used by frequency meter)
-#     9       2     cursor (offset from the right)
-#     11      100   ADC trigger buffer (seems to be only used with high sampling rates)
+#     9       2     cursor (samples count from the right)
+#     11      100   ADC trigger buffer (only used with small time bases)
 #     111     5100  ADC buffer ( 50 pre + 5000 samples + 50 post )
 #   Receive 5211 bytes for channel 2 if ON
 #     ...
@@ -270,324 +269,31 @@ class _FlashIO:
     def seek(self, position):
         self.position = position
 
-    def read(self, arg=None):
-        if arg is None:
-            # read single byte
-            res = self.buffer[self.position]
-            self.position += 1
-            return res
-        elif isinstance(arg, int):
-            # read n bytes
-            res = self.buffer[self.position: self.position + arg]
-            self.position += arg
-            return res
-        elif arg is str:
-            # read null terminated string
-            end = self.buffer.index(0, self.position)
-            txt = self.buffer[self.position: end].decode('ASCII')
-            self.position = end + 1
-            return txt
-        else:
-            # read structure
-            sta = Struct(arg)
-            res = sta.unpack_from(self.buffer, self.position)
-            self.position += sta.size
-            return res if len(res) > 1 else res[0]
+    def read(self, format):
+        # read structure
+        sta = Struct(format)
+        res = sta.unpack_from(self.buffer, self.position)
+        self.position += sta.size
+        return res if len(res) > 1 else res[0]
 
-    def write(self, arg, *args):
-        if args:
-            # write structure
-            sta = Struct(arg)
-            sta.pack_into(self.buffer, self.position, *args)
-            self.position += sta.size
-        elif isinstance(arg, str):
-            # write ASCII null terminated string
-            buf = arg.encode('ASCII') + b'\0'
-            self.buffer[self.position: self.position + len(buf)] = buf
-            self.position += len(buf)
-        elif isinstance(arg, int):
-            # write single byte
-            self.buffer[self.position] = arg
-            self.position += 1
-        else:
-            # write bytes
-            self.buffer[self.position: self.position + len(arg)] = arg
-            self.position += len(arg)
+    def read_str(self):
+        # read null terminated string
+        end = self.buffer.index(0, self.position)
+        txt = self.buffer[self.position: end].decode('ASCII')
+        self.position = end + 1
+        return txt
 
+    def write(self, format, *values):
+        # write structure
+        sta = Struct(format)
+        sta.pack_into(self.buffer, self.position, *values)
+        self.position += sta.size
 
-
-class BokehChart:
-
-    _FORMATTER_X =\
-        "var v=tick, n=-1;"\
-        "if (v>=60) return ((v/60)|0)+':'+(+(100+v%60).toFixed(2)+'').substring(1);"\
-        "for (; v && !(v|0); ++n) v*=1e3;"\
-        "return v && +v.toPrecision(5)+('mµnp'[n]||'')+'s';"
-
-    _FORMATTER_Y =\
-        "var v=tick, n=-1;"\
-        "for (; v && !(v|0); ++n) v*=1e3;"\
-        "return v && +v.toPrecision(5)+('mµnp'[n]||'')+'v';"
-
-
-    def __init__(self, data, opts, rollover=None):
-        import bokeh.io, bokeh.plotting, bokeh.models, bokeh.models.tools
-
-        self.xy_mode = opts.pop('xy_mode', False)
-
-        if isinstance(data, Frames):
-            if self.xy_mode:
-                opts.setdefault('tools', 'pan,wheel_zoom,zoom_in,zoom_out,box_zoom,save,reset')
-                opts.setdefault('active_multi', 'box_zoom')
-                opts.setdefault('width', 250)
-                opts.setdefault('height', 250)
-                opts.setdefault('xlabel', data[0].name)
-                opts.setdefault('ylabel', data[1].name)
-                lines = [{'name': 'XY',
-                          'x'   : data[0].y(),
-                          'y'   : data[1].y(),
-                          'xlim': data[0].ylim,
-                          'ylim': data[1].ylim }]
-            else:
-                lines = data.to_dict()
-        else:
-            lines = data
-
-        labels = opts.pop('label', [ line['name'] for line in lines ])
-
-        opts.setdefault('frame_width', opts.pop('width', 600))
-        opts.setdefault('frame_height', opts.pop('height', 250))
-        opts.setdefault('lod_interval', 0)
-        opts.setdefault('x_axis_label', opts.pop('xlabel', None))
-        opts.setdefault('y_axis_label', opts.pop('ylabel', None))
-        opts.setdefault('color', ('#1f77b4', '#ff7f0e'))
-        opts.setdefault('active_inspect', None)
-        opts.setdefault('active_drag', None)
-        opts.setdefault('active_multi', 'xbox_zoom')
-        opts.setdefault('tools', 'xpan,xwheel_zoom,xzoom_in,xzoom_out,xbox_zoom,save,reset')
-        opts.setdefault('legend_label', labels)
-        opts.setdefault('output_backend', 'canvas')  # webgl or canvas
-
-        axe_kw = set('alpha,color,muted,visible,legend_field,legend_group,legend_label'.split(','))
-        fig_opts = { k:v for k,v in opts.items() if not (k in axe_kw or k.startswith('line_')) }
-        axe_opts = [ { k:v[i] for k,v in opts.items() if k not in fig_opts }
-                     for i in range(len(lines)) ]
-
-        p = bokeh.plotting.Figure(**fig_opts)
-        p.grid.grid_line_alpha = 0.5
-        p.toolbar.logo = None
-
-        ds = bokeh.models.ColumnDataSource(data={})
-        y_range_name = 'default'
-        y_range = p.y_range
-
-        for i, line in enumerate(lines):
-            xs = line['x']
-            ys = line['y']
-            xlim = line.get('xlim')
-            ylim = line.get('ylim')
-            if not hasattr(xs, '__len__'): xs = [ xs ]
-            if not hasattr(ys, '__len__'): ys = [ ys ]
-            ds.data['x'] = xs
-            ds.data[labels[i]] = ys
-
-            if not xlim:
-                xlim = (xs[0] - 1e-9, xs[-1] + 1e-9) if len(xs) > 1 else (0, None)
-            p.x_range.start, p.x_range.end = p.x_range.bounds = xlim
-
-            if ylim:
-                if i > 0 and (y_range.start != ylim[0] or y_range.end != ylim[1]):
-                    y_range_name = 'y_range_' + str(i)
-                    y_range = p.extra_y_ranges[y_range_name] = bokeh.models.DataRange1d()
-                    p.add_layout(bokeh.models.LinearAxis(y_range_name=y_range_name), 'right')
-                y_range.start, y_range.end = ylim
-
-            pl = p.line('x', labels[i], source=ds, y_range_name=y_range_name, **axe_opts[i])
-            y_range.renderers += (pl,)
-
-        for ax in p.xaxis:
-            ax.minor_tick_line_color = None
-            ax.ticker.desired_num_ticks = 10
-            code = (self._FORMATTER_X, self._FORMATTER_Y)[self.xy_mode]
-            ax.formatter = bokeh.models.FuncTickFormatter(code=code)
-
-        for ax in p.yaxis:
-            ax.minor_tick_line_color = None
-            ax.ticker.desired_num_ticks = 10
-            ax.formatter = bokeh.models.FuncTickFormatter(code=self._FORMATTER_Y)
-
-        lg = p.legend[0]
-        lg.location = 'left'
-        lg.click_policy = 'hide'
-        lg.orientation = 'horizontal'
-        lg.margin = 0
-        lg.padding = 2
-        lg.spacing = 30
-        lg.border_line_width = 0
-        p.add_layout(lg, 'above')
-
-        p.select(type=bokeh.models.ZoomInTool).factor = 0.5
-        p.select(type=bokeh.models.ZoomOutTool).factor = 1
-        p.select(type=bokeh.models.ZoomOutTool).maintain_focus = False
-        p.select(type=bokeh.models.WheelZoomTool).maintain_focus = False
-
-        self.figure = p
-        self.handle = None
-        self.rollover = rollover
-
-
-    def __call__(self, source):
-        self.update(source)
-
-
-    def show(self):
-        import bokeh.io
-
-        if _is_notebook():
-            bokeh.io.output_notebook(hide_banner=True)
-            self.handle = bokeh.io.show(self.figure, notebook_handle=True)
-        else:
-            self.handle = bokeh.io.show(self.figure)
-
-        return self
-
-
-    def update(self, source):
-        import bokeh.io
-        renderers = self.figure.renderers
-
-        if isinstance(source, Frames):
-            if self.xy_mode:
-                data = { 'x': source.CH1.y(), renderers[0].glyph.y: source.CH2.y() }
-            else:
-                data = { 'x': source.x() }
-                for i, frame in enumerate(source):
-                    data[renderers[i].glyph.y] = frame.y()
-
-        elif isinstance(source, list):
-            xs = source[0]['x']
-            data = { 'x': xs if hasattr(xs, '__len__') else [ xs ] }
-            for i, line in enumerate(source):
-                ys = line['y']
-                data[renderers[i].glyph.y] = ys if hasattr(ys, '__len__') else [ ys ]
-
-        elif type(source).__name__ == 'DataFrame':
-            data = { 'x': source.index.to_numpy(dtype=np.float32) }
-            for i, col in enumerate(source):
-                data[renderers[i].glyph.y] = source[col].to_numpy(dtype=np.float32)
-
-        else:
-            raise ValueError("Invalid argument source")
-
-        if 0 < len(data['x']) < 10:
-            renderers[0].data_source.stream(data, self.rollover)
-        else:
-            renderers[0].data_source.data = data
-
-        # TODO: rollover range
-        # if self.rollover is not None and len(ds.data['x']) >= self.rollover:
-        #     xr = self.figure.x_range
-        #     x0 = ds.data['x'][0]
-        #     xr.update(start=x0, end=None, bounds=(x0, None) )
-
-        assert self.handle is not None
-        bokeh.io.push_notebook(handle=self.handle)
-
-
-
-class MatplotlibChart:
-
-
-    def __init__(self, lines, opts):
-        import matplotlib.pyplot as plt
-
-        xy_mode = opts.pop('xy_mode', False)
-
-        if isinstance(lines, Frames):
-            if xy_mode:
-                opts.setdefault('width', 300)
-                opts.setdefault('height', 300)
-                opts.setdefault('xlabel', lines[0].name)
-                opts.setdefault('ylabel', lines[1].name)
-                lines = [{'name': 'XY',
-                          'x'   : lines[0].y(),
-                          'y'   : lines[1].y(),
-                          'xlim': lines[0].ylim,
-                          'ylim': lines[1].ylim }]
-            else:
-                lines = lines.to_dict()
-
-        labels = opts.pop('legend_label', tuple(line['name'] for line in lines))
-
-        width = opts.pop('width', 700)
-        height = opts.pop('height', 300)
-        xlabel = opts.pop('xlabel', None)
-        ylabel = opts.pop('ylabel', None)
-        title = opts.pop('title', None)
-        opts.setdefault('label', labels)
-        opts.setdefault('color', ('#1f77b4', '#ff7f0e'))
-        opts.setdefault('alpha', (0.8, 0.8))
-
-        axe_kw = set('alpha,color,label,fmt'.split(','))
-        fig_opts = { k:v for k,v in opts.items() if k not in axe_kw }
-        axe_opts = [ { k:v[i] for k,v in opts.items() if k not in fig_opts }
-                     for i in range(len(lines)) ]
-
-        def format_time(x, pos):
-            n = 0
-            while x and not int(x):
-                x *= 1e3
-                n += 1
-            return '{0:g}{1}s'.format(round(x, 4), ' mµnp'[n] if n else '') if x else '0'
-
-        def format_volt(x, pos):
-            n = 0
-            while x and not int(x):
-                x *= 1e3
-                n += 1
-            return '{0:g}{1}v'.format(round(x, 4), ' mµnp'[n] if n else '') if x else '0'
-
-        dpi = plt.rcParams['figure.dpi']
-        fig = plt.figure(figsize=(width / dpi, height / dpi), **fig_opts)
-        ax = fig.add_subplot(111)
-
-        ax.grid(True, which='major', linestyle='-', alpha=0.5)
-        ax.set_xlabel(xlabel)
-        ax.set_ylabel(ylabel)
-
-        for i, line in enumerate(lines):
-            xs = line.get('x')
-            ys = line.get('y')
-            if not hasattr(xs, '__len__'): xs = [ xs ]
-            if not hasattr(ys, '__len__'): ys = [ ys ]
-
-            xlim = line.get('xlim')
-            if xlim:
-                ax.set_xlim(*xlim)
-            elif len(xs) > 1:
-                ax.set_xlim(_to_precision(xs[0], 5), _to_precision(xs[-1], 5))
-
-            ylim = line.get('ylim')
-            if ylim:
-                if i > 0 and ax.get_ylim() != tuple(ylim):
-                    ax = ax.twinx()
-                ax.set_ylim(*ylim)
-
-            ax.xaxis.set_major_locator(plt.MaxNLocator(10))
-            ax.xaxis.set_major_formatter((format_time, format_volt)[xy_mode])
-            ax.yaxis.set_major_locator(plt.MaxNLocator(10))
-            ax.yaxis.set_major_formatter(format_volt)
-            # ax.minorticks_on()
-            ax.plot(xs, ys, **axe_opts[i])
-
-        axlines = [ ln for ax in fig.axes for ln in ax.lines ]
-        fig.axes[0].legend(handles=axlines, loc='upper left', bbox_to_anchor=(0, 1.1), ncol=2, frameon=False)
-
-        plt.title(title)
-
-
-    def show(self):
-        return self
+    def write_str(self, text):
+        # write ASCII null terminated string
+        buf = text.encode('ASCII') + b'\0'
+        self.buffer[self.position: self.position + len(buf)] = buf
+        self.position += len(buf)
 
 
 
@@ -671,13 +377,6 @@ def _print_calibration(calibration):
             print(' * %s CH%s: %s' % (name, chl + 1, values))
 
 
-def _is_notebook():
-    try:
-        return get_ipython().__class__.__name__ == 'ZMQInteractiveShell'
-    except NameError:
-        return False
-
-
 
 class Frame:
     """ Hold the samples for an input channel. """
@@ -696,7 +395,7 @@ class Frame:
 
     @property
     def _points(self):
-        return np.frombuffer(self.buffer, 'b', offset=self.offset)
+        return np.frombuffer(self.buffer, np.int8, offset=self.offset)
 
 
     @property
@@ -721,7 +420,9 @@ class Frame:
     @property
     def xlim(self):
         """ tuple: (Left limit, Right limit) . """
-        return self.tx, self.tx + (self.count - 1) * self.sx
+        x1 = self.tx - (self.offset + 1) * self.sx
+        x2 = self.tx + self.count * self.sx
+        return x1, x2
 
 
     def x(self):
@@ -827,19 +528,47 @@ class Frame:
         return round(ys.std() * self.sy, 3)
 
 
+    def _get_levels(self):
+        points = self._points + 128
+        counts = np.bincount(points, minlength=256)
+        m = np.dot(counts, range(256)) // len(points)
+        lo = np.argmax(counts[:m + 1]) - 128
+        hi = np.argmax(counts[m:]) + m - 128
+        return lo, hi
+
+
     def levels(self):
         """
         Returns:
             tuple: Vbase, Vtop.
         """
-        points = self._points + 128
-        counts = np.bincount(points, minlength=256)
-        i = int(points.mean() + 0.5)
-        v0 = _clip(np.argmax(counts[:i + 1]) - 128, -125, 125)
-        v1 = _clip(np.argmax(counts[i:]) + i - 128, -125, 125)
-        lower = round(v0 * self.sy + self.ty, 3)
-        upper = round(v1 * self.sy + self.ty, 3)
+        lo, hi = self._get_levels()
+        lower = round(_clip(lo, -125, 125) * self.sy + self.ty, 3)
+        upper = round(_clip(hi, -125, 125) * self.sy + self.ty, 3)
         return lower, upper
+
+
+    def to_ttl(self, ratio_low=0.2, ratio_high=0.4):
+        """ Convert to TTL levels (0 or 1)
+
+        Args:
+            ratio_low  (float): amplitude ratio for low level.
+            ratio_high (float): amplitude ratio for high level.
+        Returns:
+            ndarray: 1D Numpy array of 0 and 1.
+        """
+        lo, hi = self._get_levels()
+        if (hi - lo) < 10:
+            lo = hi = -127
+
+        points = self._points
+        nlo = points > int(lo + (hi - lo) * ratio_low)
+        ttl = points > int(lo + (hi - lo) * ratio_high)
+
+        for i in range(1, len(ttl)):
+            ttl[i] = ttl[i] or nlo[i] and ttl[i - 1]  # n-1 if neither high or low
+
+        return ttl.astype(np.int8)
 
 
     def describe(self):
@@ -866,19 +595,22 @@ class Frame:
         y = self.y()
         vmin = round(y.min(), 3)
         vmax = round(y.max(), 3)
-        vpp  = vmax - vmin
+        vpp  = round(vmax - vmin, 3)
         vavg = round(y.mean(), 3)
         vrms = round(sqrt(np.square(y, dtype=np.float32).mean()), 3)
-        vbase, vtop = self.levels()
-        vamp = vtop - vbase
+        vbase, vtop = [ round(v, 3) for v in self.levels() ]
+        vamp = round(vtop - vbase, 3)
 
-        if vamp / (ADC_RANGE * self.sy) > 0.05 :
-            yf = np.fft.rfft(y - vavg)
-            i = np.absolute(yf).argmax()
-            freq = i / ((len(self.buffer) - self.offset) * self.sx)
-            phi = cmath.phase(yf[i]) + np.pi * (1.5 - sum(self.xlim) * freq)
-            phase = round(cmath.phase(cmath.rect(1, phi)), 2)
-            period = 1 / freq
+        if self.frequency > 1:
+            win = np.hamming(4096)
+            trim  = (len(y) - len(win)) >> 1
+            yf = np.fft.rfft((y[trim: len(y) - trim] - vavg) * win)
+            bin_i = np.abs(yf).argmax()
+            bin_freq = bin_i / len(win) / self.sx
+            bin_phase = np.angle(yf[bin_i]) + np.pi / 2
+            freq = round(self.frequency, 3)
+            phase = round((bin_phase - sum(self.xlim) * freq * np.pi) % (2 * np.pi), 2)
+            period = round(1 / freq, 3)
         else:
             period = freq = phase = 0
 
@@ -887,6 +619,57 @@ class Frame:
         return pandas.DataFrame({ self.name: v }, index=k)
 
 
+    def fft(self, window=np.hamming, length=None):
+        """ Compute the discrete Fourier Transform.
+
+        Args:
+            window (func): optional, defaults to `numpy.hamming` .
+            length (int): optional, defaults to closest power of 2.
+        Returns:
+            tuple: (frequencies (Hz), normalized magnitudes (Vrms)).
+        """
+        y = self.y()
+        size = length or 2 ** int(log2(min(len(y), 4096)))
+        win = window(size) if window else np.full(size, 1)
+        trim = (len(y) - len(win)) >> 1
+        yfft = np.fft.rfft(y[trim: len(y) - trim] * win)
+        yf = np.abs(yfft) / (len(yfft) * win.mean() * np.sqrt(2))
+        xf = np.fft.rfftfreq(size, self.sx)
+        return xf, yf
+
+
+    def filter(self, ratio=0.1):
+        """
+            ratio (float): optional, from 0 to 1, where 1 is the Nyquist frequency.
+        """
+        from scipy import signal
+
+        ratio = _parse.ratio(ratio)
+        wn = 1 / (ratio * len(self.buffer) / 2)
+        b, a = signal.butter(3, wn)
+        self.buffer = signal.filtfilt(
+            b, a, self.buffer, padlen=200).astype(np.int8)
+
+
+    def decode_uart(self, baud=None, bits=8, parity=None, msb=False):
+        """ Decode UART samples .
+
+        Returns:
+            list: [ UART(start=, value=, ...), ... ]
+        """
+        import decoder
+        return decoder.decode_uart((self,), baud, bits, parity, msb)
+
+
+    def decode_wire(self):
+        """ Decode 1 WIRE samples .
+
+        Returns:
+            list: [ WIRE(start=, value=, ...), ... ]
+        """
+        import decoder
+        return decoder.decode_wire(self)
+
 
 class Frames(tuple):
     """ Holds the channels frame (`Frame` `CH1`, `Frame` `CH2`) .
@@ -894,7 +677,7 @@ class Frames(tuple):
     Examples:
         >>> ch1, ch2 = frames  # destructuring
         >>> ch1 = frames[CH1]  # by index
-        >>> ch1 = frames.CH1   # by attribute
+        >>> ch1 = frames.ch1   # by attribute
     """
 
     def __new__(cls, frames, pulltime):
@@ -917,13 +700,36 @@ class Frames(tuple):
         return self.to_dataframe()._repr_html_()
 
 
+    def slice(self, start, stop):
+        """ Extract a section of the samples at given times.
+
+        Args:
+            start (`float` ): Start time (second)
+            stop  (`float` ): Stop time (second)
+        Returns:
+            `Frames`
+        """
+        frames = [ None ] * len(self)
+
+        for frame in self:
+            f = copy(frame)
+            i = f.offset + round((start - f.tx) / f.sx)
+            j = f.offset + round((stop - f.tx) / f.sx)
+            f.buffer = f.buffer[i: j]
+            f.tx += (i - f.offset) * f.sx
+            f.offset = 0
+            frames[f.channel] = f
+
+        return Frames(frames, self.time)
+
+
     @property
-    def CH1(self):
+    def ch1(self):
         return self[0]
 
 
     @property
-    def CH2(self):
+    def ch2(self):
         return self[1]
 
 
@@ -999,11 +805,13 @@ class Frames(tuple):
             legend   (list): Optional name each curve. ex: ['Channel 1', 'Channel 2']
             kwargs   (dict): keyworded arguments for the backend library
         """
+        import plotter
 
         if backend == 'bokeh':
-            BokehChart(self, kwargs).show()
+            plotter.BokehChart(self, kwargs).show()
         elif backend == 'matplotlib':
-            MatplotlibChart(self, kwargs).show()
+            import plotter
+            plotter.MatplotlibChart(self, kwargs).show()
         else:
             return self.to_dataframe().plot(backend=backend, **kwargs)
 
@@ -1028,8 +836,40 @@ class Frames(tuple):
             list: [ { name:'CH1', x:[...], y:[...], ylim:(low, high) }, ... ]
         """
         xs = self.x()
-        items = [ { 'name':f.name, 'x':xs, 'y':f.y(), 'ylim':f.ylim } for f in self ]
-        return items
+        return [ { 'name': f.name, 
+                   'x': xs,
+                   'y': f.y(),
+                   'xlim': f.xlim,
+                   'ylim': f.ylim
+                } for f in self ]
+
+
+    def filter(self, ratio=0.1):
+        """
+            ratio (float): optional, from 0 to 1, where 1 is the Nyquist frequency.
+        """
+        for frame in self.frames:
+            frame.filter(ratio)
+
+
+    def decode_i2c(self):
+        """ Decode I2C samples for CH1=scl CH2=sda .
+
+        Returns:
+            list: [ I2C(start=...), ... ]
+        """
+        import decoder
+        return decoder.decode_i2c(self)
+
+
+    def decode_uart(self, baud=None, bits=8, parity=None, msb=False):
+        """ Decode UART samples for CH1=tx CH2=rx .
+
+        Returns:
+            list: [ UART(start=, ...), ... ]
+        """
+        import decoder
+        return decoder.decode_uart(self, baud, bits, parity, msb)
 
 
     @classmethod
@@ -1144,8 +984,9 @@ class Stream:
             legend   (list): Optional, name each curve. ex: ['Channel 1', 'Channel 2']
             kwargs   (dict): keyworded arguments for the backend library
         """
+        import plotter
         data = self._next()
-        chart = BokehChart(data, kwargs, rollover)
+        chart = plotter.BokehChart(data, kwargs, rollover)
         self.sink(chart)
         return chart.show()
 
@@ -1297,11 +1138,11 @@ class VDS1022:
         self._push(CMD.SET_MULTI, MULTI_IN)  # [ 0:Out  1:PassFail  2:In ]
         self._push(CMD.SET_TRIGGER, 1)  # MULTI_IN
 
-        self._push_timerange(self.timerange, self.rollmode)
-
         for chl in range(CHANNELS):
             self._send(CMD.SET_EDGE_LEVEL[chl], 0x807f)  # 127,-128 to disable triggering while setting levels
             self._push_channel(chl)
+
+        self._push_timerange(self.timerange, self.rollmode)
 
 
     def stop(self):
@@ -1337,22 +1178,22 @@ class VDS1022:
 
 
     def _connect(self):
-        _usb = self._usb = libusb1.get_backend() or libusb0.get_backend()
+        usb = self._usb = libusb1.get_backend() or libusb0.get_backend()
 
-        for dev in _usb.enumerate_devices():
-            desc = _usb.get_device_descriptor(dev)
+        for dev in usb.enumerate_devices():
+            desc = usb.get_device_descriptor(dev)
 
             if desc.idVendor == USB_VENDOR_ID and desc.idProduct == USB_PRODUCT_ID:
-                _handle = self._handle = _usb.open_device(dev)
-                _usb.claim_interface(_handle, USB_INTERFACE)
-                _usb.clear_halt(_handle, USB_EP_WRITE)
-                _usb.clear_halt(_handle, USB_EP_READ)
+                handle = self._handle = usb.open_device(dev)
+                usb.claim_interface(handle, USB_INTERFACE)
+                usb.clear_halt(handle, USB_EP_WRITE)
+                usb.clear_halt(handle, USB_EP_READ)
 
                 if self._send(CMD.GET_MACHINE, CMD.V) == 1:  # 0:Error 1:VDS1022 3:VDS2052
                     return True
 
-                _usb.release_interface(_handle, USB_INTERFACE)
-                _usb.close_device(_handle)
+                usb.release_interface(handle, USB_INTERFACE)
+                usb.close_device(handle)
                 self._handle = None
 
         raise USBError("USB device %s not found" % MACHINE_NAME)
@@ -1448,7 +1289,7 @@ class VDS1022:
         """
         with self._lock:
             self._submit()
-        if self._lock.wait(seconds):
+        if self._stop.wait(seconds):
             raise KeyboardInterrupt()
 
 
@@ -1537,10 +1378,10 @@ class VDS1022:
         self.calibration = [ [ list(reader.read('<10H')) for ch in range(CHANNELS) ]
                              for i in (GAIN, AMPL, COMP) ]
         reader.seek(206)
-        self.oem       = reader.read()          # 1
-        self.version   = reader.read(str)       # V2.5
-        self.serial    = reader.read(str)       # VDS1022I1809215
-        self.locales   = reader.read(100)[:12]  # 1 1 1 1 1 1 1 1 1 1 1 1
+        self.oem       = reader.read('<B')      # 1
+        self.version   = reader.read_str()      # V2.5
+        self.serial    = reader.read_str()      # VDS1022I1809215
+        self.locales   = reader.read('<100B')   # 1 1 1 1 1 1 1 1 1 1 1 1 ...
         self.phasefine = reader.read('<H')      # 0
 
         ver = self.version.upper()
@@ -1576,10 +1417,10 @@ class VDS1022:
                 writer.write('<10H', *self.calibration[i][chl])
 
         writer.seek(206)
-        writer.write(self.oem)
-        writer.write(self.version.upper())
-        writer.write(self.serial.upper())
-        writer.write(bytes(self.locales) + b'\xff' * (100 - len(self.locales)))
+        writer.write('<B', self.oem)
+        writer.write_str(self.version.upper())
+        writer.write_str(self.serial.upper())
+        writer.write('<100B', *self.locales)
         writer.write('<H', self.phasefine)
 
         self.write_flash(writer.buffer)
@@ -1679,8 +1520,8 @@ class VDS1022:
 
         # SET_CHL_ON
         #  b0: bit 0 = CH1 [0=OFF 1=ON],  bit 1 = CH2 [0=OFF 1=ON]
-        on_arg = sum(on << i for i, on in enumerate(self.on))
-        self._push(CMD.SET_CHL_ON, on_arg)
+        # on_arg = sum(1 << i for i, on in enumerate(self.on))
+        # self._push(CMD.SET_CHL_ON, on_arg)
 
 
     def set_channel_ext(self, state):
@@ -1757,13 +1598,20 @@ class VDS1022:
             source      (int): Channel index: `CH1` `CH2` `EXT` .
             mode       (mode): Mode index: `EDGE` `PULSE` `SLOPE` .
             condition   (int): Edge: `RISE`, `FALL` .
-                               Slop/Pulse: `RISE_SUP`, `RISE_EQU`, `RISE_INF`, `FALL_SUP`, `FALL_EQU`, `FALL_INF` .
-            position  (float): Optional horizontal trigger position from 0 to 1. Defaults to ``0.5`` .
-            level (float,str): Optional trigger level in volt. Pair of hi and low if SLOPE mode. Defaults to ``0v`` .
-            width     (float): Optional condition width in second for PULSE/SLOPE mode only. Defaults to ``30ns``.
-            holdoff   (float): Optional time in second before the next trigger can occur. Defaults to ``100ns``.
-            alternate  (bool): Optional alternate triggering for both CH1 and CH2. Defaults to ``False``.
-            sweep       (int): Optional sweep mode: `AUTO`, `NORMAL`, `ONCE`.  Defaults to `AUTO`.
+                               Slop/Pulse: `RISE_SUP`, `RISE_EQU`, `RISE_INF`, 
+                                           `FALL_SUP`, `FALL_EQU`, `FALL_INF` .
+            position  (float): Optional horizontal trigger position from 0 to 1.
+                               Defaults to ``0.5`` .
+            level (float,str): Optional trigger level in volt. Pair of hi and low if SLOPE mode.
+                               Defaults to ``0v`` .
+            width     (float): Optional condition width in second for PULSE/SLOPE mode only.
+                               Defaults to ``30ns``.
+            holdoff   (float): Optional time in second before the next trigger can occur.
+                               Defaults to ``100ns``.
+            alternate  (bool): Optional alternate triggering for both CH1 and CH2.
+                               Defaults to ``False``.
+            sweep       (int): Optional sweep mode: `AUTO`, `NORMAL`, `ONCE`.
+                               Defaults to `AUTO`.
         Examples:
             >>> dev.set_trigger(CH1, EDGE, RISE, level='2.5v', sweep=ONCE)
             >>> dev.set_trigger(CH1, PULSE, RISE_SUP, level='2.5v', width='2ms', sweep=ONCE)
@@ -1856,8 +1704,9 @@ class VDS1022:
         m, e = _iexp10(holdoff * 1e8, 1023)  # to 10th ns, 10bits mantissa, base10 exponent
         self._push(CMD.SET_TRG_HOLDOFF[chl], pack('>H', m << 6 | e & 7))
 
-        # empty ???
-        self._push(CMD.SET_EMPTY, 1)
+        self.wait(0.1)
+        self.send(CMD.SET_TRIGGER, trg)
+        self.send(CMD.SET_EMPTY, 0)
 
 
     def get_triggered(self):
@@ -1916,11 +1765,12 @@ class VDS1022:
             autosense (bool): Optional, auto adjusts the trigger level to 50%. Defaults to `False`.
             kwargs    (dict): keyworded arguments for the backend library
         """
+        import plotter
         self._halt()
 
         source = self.pull_iter(freq, autorange, autosense)
         frames = next(source)
-        chart = BokehChart(frames, kwargs).show()
+        chart = plotter.BokehChart(frames, kwargs).show()
 
         def run():
             for frames in source:
@@ -2091,9 +1941,10 @@ class VDS1022:
         again = False
         starttime = None
 
-        offset = READ_SIZE - SAMPLES
-        if not self.rollmode:
-            offset -= (ADC_SIZE - SAMPLES) >> 1  # from center instead right
+        if self.rollmode:
+            offset = READ_SIZE - SAMPLES - 3  # from right
+        else:
+            offset = (READ_SIZE - ADC_SIZE) + ((ADC_SIZE - SAMPLES) >> 1)  # from center
 
         points = np.frombuffer(buffer, 'b', SAMPLES, offset=offset)
 
@@ -2485,5 +2336,5 @@ if __name__ == '__main__':
         dev.set_channel(CH1, range='10v', coupling='DC', offset=-0.4, probe='x10')
 
         for frames in dev.pull_iter(autorange=False):
-            print('Vrms:%s' % frames.CH1.rms(), end='\r')
+            print('Vrms:%s' % frames.ch1.rms(), end='\r')
             time.sleep(1)

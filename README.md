@@ -7,10 +7,11 @@ This software is an unofficial release for the VDS1022 with a few improvements :
 * A Python API to directly communicate with the device to log, analyse and plot
 * New shortcuts: single trigger, trigger level, offsets, coupling, inversion, reset ...
 * Added single/normal triggering for the rolling mode (time base >= 100ms/div)
+* Added a noise filtering option in the channel menu
 * Added a vertical mark cursor to adjust the pulse/slope trigger width
 * Added a vertical mark cursor to measure the duty cycle and phase angle
 * Added measures for the Math channel
-* Added an option to measure a current instead of a voltage
+* Added an option in the channel menu to measure a current instead of a voltage
 * Added buttons to change the color of the waves
 * Added buttons to store/restore the current settings while keeping the same calibration
 * Added a x20, x50 and x500 probe ratio
@@ -30,8 +31,9 @@ This device is also sold under different brands:
 
 ## Requirements
 
-Java Runtime Environement 8 (1.8) or superior is required. Java 11 is recommended especially if you have an HDPI display.  
-Installers are available at https://adoptium.net/releases.html (OpenJDK 11 JRE ~50Mb).  
+Java Runtime Environment 8 (1.8) or superior is required.  
+Java 11 or superior is recommended especially if you have an HDPI display.  
+Installers are available at https://adoptium.net/releases.html (JRE ~40Mb).  
 It should work just fine on any computer/laptop as long as there's 200Mb of free RAM.
 
 
@@ -63,7 +65,7 @@ To fully uninstall, open your application manager and select "owon-vds-tiny" or 
 
 #### macOS (64 bits Intel and ARM Apple silicon)
 
-Open a terminal window in this folder and execute `sudo bash install-mac.sh` .  
+Open a terminal window in this folder (without Rosetta) and execute `sudo bash install-mac.sh` .  
 
 The script simply writes the files into `/Applications/OWON VDS1022` .  
 User settings are stored in `~/Library/Application Support/OWON VDS1022`.  
@@ -93,7 +95,12 @@ The current calibration is stored in the user folder as "VDS1022xxxxxx-cals.json
 
 This project provides a Python API to directly communicate with the device.  
 It can be used for data logging or to analyse and visualise the samples in a [Jupyter Notebook](https://jupyter.org/).  
-The code and examples are available in the [api folder](api/).  
+The code and examples are available in the [api/python folder](api/python).  
+
+To install the `vds1022` module, run:
+```shell
+pip install api/python
+````
 
 Simple measure :
 

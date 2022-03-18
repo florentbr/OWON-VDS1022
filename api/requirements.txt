@@ -1,5 +1,0 @@
-pyusb
-numpy
-pandas
-bokeh
-matplotlib

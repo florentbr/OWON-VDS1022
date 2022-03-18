@@ -1,4 +1,11 @@
 
+2022/03/23 (1.1.1-cf15)
+* added noise filtering option in channel menu
+* fixed frequency meter precision (issue #49)
+* fixed and improved FFT
+* fixed horizontal trigger position when stopped and timebase is changed with a non centered trigger
+* fixed timebase not updated when switching to zoom
+
 2022/02/09 (1.1.1-cf14)
 * improved the record/play dialog
 * added shortcuts info on tooltips
