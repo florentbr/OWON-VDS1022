@@ -50,7 +50,7 @@ main () {
 
 
 	local packager
-	for packager in apt pacman dnf yum zypper ppm / ; do
+	for packager in pacman dnf yum zypper ppm apt / ; do
 		[ $packager = / ] && raise 'Package manager not supported'
 		command -v $packager >/dev/null && break
 	done
@@ -62,7 +62,7 @@ main () {
 	case $packager in
 		apt)             build-deb $arch ;;
 		pacman)          build-pac $arch ;;
-		dnf|zipper|yum)  build-rpm $arch ;;
+		dnf|zypper|yum)  build-rpm $arch ;;
 		ppm)             build-pet $arch ;;
 	esac
 
@@ -81,7 +81,7 @@ main () {
 		apt)     apt install --reinstall "$_PACKAGE" ;;
 		pacman)  pacman -U "$_PACKAGE"               ;;
 		dnf)     dnf install "$_PACKAGE"             ;;
-		zipper)  zipper install "$_PACKAGE"          ;;
+		zypper)  zypper install "$_PACKAGE"          ;;
 		yum)     yum install "$_PACKAGE"             ;;
 		ppm)     pkg -f install "$_PACKAGE"          ;;
 		*)       raise "Packager not supported"      ;;
@@ -212,7 +212,7 @@ License: Multiple
 Vendor: ${_VENDOR}
 URL: ${_HOMEPAGE}
 Packager: na <na>
-Requires: libusb1, libc.so.6, jre
+Requires: libusb-1.0.so.0, libc.so.6, jre
 AutoReqProv: no
 %define _binary_payload w6.gzdio
 %description

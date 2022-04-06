@@ -543,8 +543,8 @@ class Frame:
             tuple: Vbase, Vtop.
         """
         lo, hi = self._get_levels()
-        lower = round(_clip(lo, -125, 125) * self.sy + self.ty, 3)
-        upper = round(_clip(hi, -125, 125) * self.sy + self.ty, 3)
+        lower = _clip(lo, -125, 125) * self.sy + self.ty
+        upper = _clip(hi, -125, 125) * self.sy + self.ty
         return lower, upper
 
 
@@ -619,6 +619,21 @@ class Frame:
         return pandas.DataFrame({ self.name: v }, index=k)
 
 
+    def thd(self, window=np.hamming, length=None):
+        """ Compute the total harmonic distortion.
+
+        Args:
+            window (func): optional, defaults to `numpy.hamming` .
+            length (int): optional, defaults to closest power of 2.
+        Returns:
+            float: THD.
+        """
+        values = self.fft(window, length)[1:]
+        values_max = values.max()
+        thd = ((np.square(values).sum() - values_max ** 2.0) ** 0.5) / values_max
+        return thd
+
+
     def fft(self, window=np.hamming, length=None):
         """ Compute the discrete Fourier Transform.
 
@@ -647,8 +662,8 @@ class Frame:
         ratio = _parse.ratio(ratio)
         wn = 1 / (ratio * len(self.buffer) / 2)
         b, a = signal.butter(3, wn)
-        self.buffer = signal.filtfilt(
-            b, a, self.buffer, padlen=200).astype(np.int8)
+        self.buffer[self.offset:] = signal.filtfilt(
+            b, a, self.buffer[self.offset:], padlen=200).astype(np.int8)
 
 
     def decode_uart(self, baud=None, bits=8, parity=None, msb=False):
@@ -669,6 +684,7 @@ class Frame:
         """
         import decoder
         return decoder.decode_wire(self)
+
 
 
 class Frames(tuple):
@@ -836,7 +852,7 @@ class Frames(tuple):
             list: [ { name:'CH1', x:[...], y:[...], ylim:(low, high) }, ... ]
         """
         xs = self.x()
-        return [ { 'name': f.name, 
+        return [ { 'name': f.name,
                    'x': xs,
                    'y': f.y(),
                    'xlim': f.xlim,
@@ -881,12 +897,11 @@ class Frames(tuple):
         Returns:
             `Frames`
         """
-        frameset = items[0]
-        frames = [ copy(frame) for frame in tuple.__iter__(frameset) ]
+        frames = [ copy(frame) for frame in tuple.__iter__(items[0]) ]
         for frame in frames:
             if frame:
-                frame.buffer = np.concatenate([ fs[frame.channel].buffer for fs in items ])
-        return cls(frames, frameset.time)
+                frame.buffer = np.concatenate([ item[frame.channel].buffer for item in items ])
+        return cls(frames, items[0].time)
 
 
 
@@ -1058,7 +1073,7 @@ class VDS1022:
         self.serial = None  #: str: Hardware serial.
         self.locales = None
         self.phasefine = None
-        self.firmware = None  # firmware version number
+        self.vfpga = None  # firmware version number
 
         # Calibration from local file 'VDS1022xxxxxxxx.json' or flash memory
         self.calibration = None
@@ -1077,24 +1092,24 @@ class VDS1022:
         # Pending commands
         self._queue = collections.OrderedDict()
 
+        # connect device
+        if not self._connect():
+            raise USBError("USB device %s not found" % MACHINE_NAME)
+
         # initialize device
-        self._connect()
         self._load_flash()
         self._load_calibration()
         self._load_fpga(firmware or FIRMWARE_DIR)
         self._initialize()
 
         # Background thread to keep the USB connexion alive
-
         def run():
             while self._handle:
                 lastwrite = self._writetime
 
-                if self._stop.wait(3):
+                if self._stop.wait(2):
                     time.sleep(0.01)
-                    continue
-
-                if self._writetime == lastwrite:
+                elif self._writetime == lastwrite:
                     try:
                         with self._lock:
                             self._send(CMD.GET_MACHINE, CMD.V)
@@ -1178,25 +1193,24 @@ class VDS1022:
 
 
     def _connect(self):
-        usb = self._usb = libusb1.get_backend() or libusb0.get_backend()
+        usb = libusb1.get_backend() or libusb0.get_backend()
 
         for dev in usb.enumerate_devices():
             desc = usb.get_device_descriptor(dev)
 
             if desc.idVendor == USB_VENDOR_ID and desc.idProduct == USB_PRODUCT_ID:
-                handle = self._handle = usb.open_device(dev)
+                handle = usb.open_device(dev)
                 usb.claim_interface(handle, USB_INTERFACE)
                 usb.clear_halt(handle, USB_EP_WRITE)
                 usb.clear_halt(handle, USB_EP_READ)
 
                 if self._send(CMD.GET_MACHINE, CMD.V) == 1:  # 0:Error 1:VDS1022 3:VDS2052
+                    self._usb = usb
+                    self._handle = handle
                     return True
 
                 usb.release_interface(handle, USB_INTERFACE)
                 usb.close_device(handle)
-                self._handle = None
-
-        raise USBError("USB device %s not found" % MACHINE_NAME)
 
 
     def _release(self):
@@ -1214,6 +1228,7 @@ class VDS1022:
 
 
     def _bulk_write(self, buffer):
+        gc.collect(0)  # prevents long gc during acquisition
         self._usb.bulk_write(self._handle, USB_EP_WRITE, USB_INTERFACE, buffer, USB_TIMEOUT)
         self._writetime = time.perf_counter()
 
@@ -1244,7 +1259,6 @@ class VDS1022:
 
     def _on_usb_err(self, ex, cmd, arg):
         self._failures += 1
-        print("USB timeout")
         if self._failures > 2:
             raise ex
         self._stop.wait(0.01 * self._failures)
@@ -1334,7 +1348,6 @@ class VDS1022:
         Args:
             source (str or bytes): File path or bytes.
         """
-
         if isinstance(source, str):
             with open(source, 'rb') as f:
                 return self.write_flash(f.read())
@@ -1370,13 +1383,14 @@ class VDS1022:
 
         reader = _FlashIO(self.read_flash())
 
-        header, version = reader.read('<HI')
-        assert header == 0x55AA, "Bad flash header %d" % header
-        assert version == 2, "Bad flash version %d" % version
+        flash_header, flash_version = reader.read('<HI')
+        assert flash_header == 0x55AA, "Bad flash header %d" % flash_header
+        assert flash_version == 2, "Bad flash version %d" % flash_version
 
         reader.seek(6)
         self.calibration = [ [ list(reader.read('<10H')) for ch in range(CHANNELS) ]
                              for i in (GAIN, AMPL, COMP) ]
+
         reader.seek(206)
         self.oem       = reader.read('<B')      # 1
         self.version   = reader.read_str()      # V2.5
@@ -1385,16 +1399,17 @@ class VDS1022:
         self.phasefine = reader.read('<H')      # 0
 
         ver = self.version.upper()
-        assert ver.startswith('V'), "Invalid version from flash: %s" % self.version
 
-        if ver.startswith('V4'):
-            self.firmware = 4
-        elif ver.startswith('V3') or ver == 'V2.7.0':
-            self.firmware = 3
-        elif ver in ('V2.4.623', 'V2.6.0'):
-            self.firmware = 2
+        if ver.startsWith("V2.7.0"):
+            self.vfpga = 3
+        elif ver.startsWith("V2.4.623") || ver.startsWith("V2.6.0"):
+            self.vfpga = 2
+        elif ver.startsWith("V2.") || ver.startsWith("V1."):
+            self.vfpga = 1
+        elif ver.startsWith("V"):
+            self.vfpga = int(ver[1:ver.index(".")])
         else:
-            self.firmware = 1
+            raise ValueError("Invalid version from flash: %s" % self.version)
 
         if DEBUG:
             crc32 = binascii.crc32(reader.buffer[2:]) & 0xFFFFFFFF
@@ -1407,7 +1422,6 @@ class VDS1022:
         """ Overwrite the device flash memory with the info and calibration
         of this instance.
         """
-
         writer = _FlashIO(b'\xff' * FLASH_SIZE)
         writer.write('<HI', 0x55AA, 2)
 
@@ -1432,7 +1446,7 @@ class VDS1022:
             return
 
         if path.isdir(source):
-            source = path.join(source, 'VDS1022_FPGAV%s_*.bin' % self.firmware)
+            source = path.join(source, 'VDS1022_FPGAV%s_*.bin' % self.vfpga)
 
         paths = glob.glob(source)
         assert paths, 'Firmware not found at %s' % source
@@ -1444,13 +1458,13 @@ class VDS1022:
             crc32 = binascii.crc32(dump) & 0xFFFFFFFF
             print("Load firmware %s (CRC32=%08X)" % (path.basename(paths[-1]), crc32))
 
+        size = self._send(CMD.LOAD_FPGA, len(dump))
         header = Struct('<I')
-        size = self._send(CMD.LOAD_FPGA, len(dump)) - header.size
-        count = ceil(len(dump) / size)
+        count = ceil(len(dump) / (size - header.size))
 
-        for i in range(count):
+        for i, start in enumerate(range(0, len(dump), size - header.size)):
             print(" loading firmware part %s/%s" % (i + 1, count), end='\r')
-            buffer = header.pack(i) + dump[i * size: i * size + size]
+            buffer = header.pack(i) + dump[start: start + size - header.size]
             self._bulk_write(array('B', buffer))
             self._bulk_read(self._buffer, 5)
             status, value = unpack_from('<BI', self._buffer)
@@ -1687,7 +1701,7 @@ class VDS1022:
 
             # pulse/slope width
             if mode in (PULSE, SLOPE):
-                if self.firmware < 3:  # if fpga version < 3
+                if self.vfpga < 3:  # if fpga version < 3
                     m, e = _iexp10(width * 1e8, 1023)  # to 10th ns, 10bits mantissa, base10 exponent
                     if condition in (FALL_EQU, RISE_EQU):
                         self._push(CMD.SET_TRG_CDT_EQU_H[chl], int(m * 1.05) << 6 | e & 7)
@@ -1878,9 +1892,9 @@ class VDS1022:
         self._halt()
 
         if self.sweepmode:
-            for fs in self.read_iter(freq):
-                items.append(fs)
-                now = fs.time
+            for frames in self.read_iter(freq):
+                items.append(frames)
+                now = frames.time
 
                 if starttime is None:
                     starttime = now
@@ -1897,11 +1911,11 @@ class VDS1022:
                 elif now > endtime:
                     return Frames.concat(items)
         else:
-            for fs in self.read_iter(freq):
-                items.append(fs)
+            for frames in self.read_iter(freq):
+                items.append(frames)
                 if endtime is None:
-                    endtime = fs.time + max(0, duration - freq)
-                if fs.time > endtime:
+                    endtime = frames.time + max(0, duration - freq)
+                if frames.time > endtime:
                     return Frames.concat(items)
 
 
@@ -1950,7 +1964,6 @@ class VDS1022:
 
         with self._lock:
             self._submit()
-            gc.collect()
 
         while again and not self._stop.is_set() or not self._stop.wait(freq):
             with self._lock:
@@ -2024,7 +2037,6 @@ class VDS1022:
                 if starttime is None:
                     starttime = pulltime
                 yield Frames(frames, pulltime - starttime)
-                gc.collect(0)  # prevents long GC during acquisition
 
 
     def read_iter(self, freq):
@@ -2064,7 +2076,6 @@ class VDS1022:
             self._push(CMD.SET_ROLLMODE, 1)  # [ 0:off 1:on ]
             self._push(CMD.SET_DEEPMEMORY, 5120)  # cursor becomes circular at 5120, was 5100
             self._submit()
-            gc.collect()
 
         while not self._stop.wait(sleeptime):
             with self._lock:
@@ -2090,13 +2101,12 @@ class VDS1022:
                         assert length > 0, "Zero length ADC cursor"
                         cursors[chl] = cursor
 
-                    buf = buffer[READ_SIZE - length: READ_SIZE]
+                    buf = buffer[READ_SIZE - length: READ_SIZE]  # -3 to skip corrupted bytes at the end
                     frames[chl] = Frame(self, chl, buf, 0, translate, 0)
 
                 prevtime = pulltime
                 translate += length
                 yield Frames(frames, pulltime - starttime)
-                gc.collect(0)  # prevents long GC during acquisition
 
 
     def calibrate(self):
@@ -2178,7 +2188,6 @@ class VDS1022:
 
             while True:
                 try:
-                    gc.collect(0)
                     self._bulk_write(cmd_get)
                     ret = self._bulk_read(buffer)
                     CMD.GET_DATA.log(cmd_arg, ret)
@@ -2199,10 +2208,9 @@ class VDS1022:
                 print("CH%s %s err:%.2f cal:%s steps:%s scale:%.2f" % (
                         chl + 1, name, err, cal, steps, scale))
 
-            if hits > 1:
+            if hits > 2:
                 calibration[ical][chl][vb] = max(cal, cal_prev)
                 print("CH%d %s %sV: %s" % (chl + 1, name, VOLTRANGES[vb], cal))
-                gc.collect(0)
                 return True
 
             cal_prev = cal
@@ -2256,7 +2264,6 @@ class VDS1022:
             self.voltoffset[chl] = 0
             self.voltrange[chl] = VOLTRANGES[vb]
 
-            gc.collect(0)
             self._push_channel(chl)
             self._push(CMD.SET_EDGE_LEVEL[chl], pack('bb', level + 5, level - 5))
             self._push(CMD.SET_FREQREF[chl], pack('b', level))
@@ -2268,7 +2275,6 @@ class VDS1022:
 
             while True:
                 try:
-                    gc.collect(0)
                     self._bulk_write(cmd_get)
                     ret = self._bulk_read(buffer)
                     if ret == READ_SIZE:
