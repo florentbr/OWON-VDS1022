@@ -12,6 +12,8 @@ __all__ = (
     'MatplotlibChart'
 )
 
+_items = lambda x: x if hasattr(x, '__getitem__') else [ x ]
+
 
 class BokehChart:
 
@@ -51,6 +53,7 @@ class BokehChart:
             lines = data  # array of dict
 
         labels = opts.pop('label', [ line['name'] for line in lines ])
+        self.labels = labels
 
         opts.setdefault('frame_width', opts.pop('width', 600))
         opts.setdefault('frame_height', opts.pop('height', 250))
@@ -79,12 +82,10 @@ class BokehChart:
         y_range = p.y_range
 
         for i, line in enumerate(lines):
-            xs = line['x']
-            ys = line['y']
+            xs = _items(line['x'])
+            ys = _items(line['y'])
             xlim = line.get('xlim')
             ylim = line.get('ylim')
-            if not hasattr(xs, '__len__'): xs = [ xs ]
-            if not hasattr(ys, '__len__'): ys = [ ys ]
             ds.data['x'] = xs
             ds.data[labels[i]] = ys
 
@@ -151,35 +152,38 @@ class BokehChart:
 
     def update(self, source):
         import bokeh.io
-        renderers = self.figure.renderers
 
-        if type(source).__name__ == 'Frames':
+        source_cls = type(source)
+        data_source = self.figure.renderers[0].data_source
+
+
+        if source_cls is tuple:
+            data = { (self.labels[i - 1] if i else 'x'): _items(item) 
+                     for i, item in enumerate(source) }
+
+        elif source_cls is dict:
+            data = source
+
+        elif source_cls.__name__ == 'Frames':
             if self.xy_mode:
-                data = { 'x': source.ch1.y(), renderers[0].glyph.y: source.ch2.y() }
+                data = { 'x': source.ch1.y(), self.labels[0]: source.ch2.y() }
             else:
                 data = { 'x': source.x() }
                 for i, frame in enumerate(source):
-                    data[renderers[i].glyph.y] = frame.y()
+                    data[self.labels[i]] = frame.y()
 
-        elif isinstance(source, list):
-            xs = source[0]['x']
-            data = { 'x': xs if hasattr(xs, '__len__') else [ xs ] }
-            for i, line in enumerate(source):
-                ys = line['y']
-                data[renderers[i].glyph.y] = ys if hasattr(ys, '__len__') else [ ys ]
-
-        elif type(source).__name__ == 'DataFrame':
+        elif source_cls.__name__ == 'DataFrame':
             data = { 'x': source.index.to_numpy(dtype=np.float32) }
             for i, col in enumerate(source):
-                data[renderers[i].glyph.y] = source[col].to_numpy(dtype=np.float32)
+                data[self.labels[i]] = source[col].to_numpy(dtype=np.float32)
 
         else:
             raise ValueError("Invalid argument source")
 
         if 0 < len(data['x']) < 10:
-            renderers[0].data_source.stream(data, self.rollover)
+            data_source.stream(data, self.rollover)
         else:
-            renderers[0].data_source.data = data
+            data_source.data = data
 
         # TODO: rollover range
         # if self.rollover is not None and len(ds.data['x']) >= self.rollover:
@@ -253,10 +257,8 @@ class MatplotlibChart:
         ax.set_ylabel(ylabel)
 
         for i, line in enumerate(lines):
-            xs = line.get('x')
-            ys = line.get('y')
-            if not hasattr(xs, '__len__'): xs = [ xs ]
-            if not hasattr(ys, '__len__'): ys = [ ys ]
+            xs = _items(line.get('x'))
+            ys = _items(line.get('y'))
 
             xlim = line.get('xlim')
             if xlim:

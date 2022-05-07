@@ -7,7 +7,9 @@ the OWON VDS1022 oscilloscope.
 """
 
 import binascii
+import bisect
 import collections
+import datetime
 import functools
 import gc
 import glob
@@ -15,15 +17,14 @@ import json
 import logging
 import os.path as path
 import signal
+import struct
 import sys
 import threading
 import time
 
 from array import array
-from bisect import bisect_left
 from copy import copy, deepcopy
 from math import floor, ceil, log2, log10, copysign, sqrt
-from struct import Struct, pack, unpack_from
 
 assert sys.version_info >= (3, 5), "requires Python 3.5 or newer"
 
@@ -40,8 +41,8 @@ __all__ = (
     'CHANNELS',
     'CH1', 'CH2', 'EXT',
     'DC', 'AC',
-    'TIMERANGES',
-    'VOLTRANGES',
+    'VOLT_RANGES',
+    'SAMPLING_RATES',
     'EDGE', 'SLOPE', 'PULSE',
     'AUTO', 'NORMAL', 'ONCE',
     'RISE', 'FALL',
@@ -65,53 +66,52 @@ CH2 = 1  #: Channel 2
 EXT = 2  #: External TTL input/output (Multi)
 
 MULTI_OUT = 0  # Multi channel mode - trigger out
-MULTI_PF = 1   # Multi channel mode - pass/fail out
-MULTI_IN = 2   # Multi channel mode - trigger in
+MULTI_PF  = 1   # Multi channel mode - pass/fail out
+MULTI_IN  = 2   # Multi channel mode - trigger in
 
-AC = 0   #: Coupling - Alternating Current
-DC = 1   #: Coupling - Direct Current
+AC  = 0   #: Coupling - Alternating Current
+DC  = 1   #: Coupling - Direct Current
 GND = 2  #: Coupling - Ground
 
-VOLTRANGES = (
-    50E-3, 100E-3, 200E-3, 500E-3, 1, 2, 5, 10, 20, 50
-)  #: Volt ranges (10 divs)
+VOLT_RANGES = (
+    50e-3, 100e-3, 200e-3, 500e-3, 1, 2, 5, 10, 20, 50
+)  #: Volt ranges from 50mV to 50V for 10 divs
 
-TIMERANGES = (
-    50e-6, 100e-6, 200e-6, 400e-6, 1e-3, 2e-3, 4e-3, 10e-3, 20e-3, 40e-3,
-    100e-3, 200e-3, 400e-3, 1, 2, 4, 10, 20, 40, 100, 200, 400, 1000, 2000
-)  #: Time ranges in second for a frame (20 divs)
+SAMPLING_RATES = (
+    2.5, 5, 12.5, 25, 50, 125, 250, 500, 
+    1.25e3, 2.5e3, 5e3, 12.5e3, 25e3, 50e3, 125e3, 250e3, 500e3, 
+    1.25e6, 2.5e6, 5e6, 12.5e6, 25e6, 50e6, 100e6,
+)  #: Sampling rates from 2.5 S/s to 100 MS/s
 
-EDGE = 0   #: Trigger mode - Edge
+EDGE  = 0  #: Trigger mode - Edge
 VIDEO = 1  #: Trigger mode - Video
 SLOPE = 2  #: Trigger mode - Slope
 PULSE = 3  #: Trigger mode - Pulse
 
-RISE = 0     #: Trigger condition - Edge Rise
-FALL = -125  #: Trigger condition - Edge Fall
+RISE_SUP = 0  #: Trigger condition - Pulse/Slope Rise Width >
+RISE_EQU = 1  #: Trigger condition - Pulse/Slope Rise Width =
+RISE_INF = 2  #: Trigger condition - Pulse/Slope Rise Width <
+FALL_SUP = 3 - 128  #: Trigger condition - Pulse/Slope Fall Width >
+FALL_EQU = 4 - 128  #: Trigger condition - Pulse/Slope Fall Width =
+FALL_INF = 5 - 128  #: Trigger condition - Pulse/Slope Fall Width <
 
-RISE_SUP = 0     #: Trigger condition - Pulse/Slope Rise Width >
-RISE_EQU = 1     #: Trigger condition - Pulse/Slope Rise Width =
-RISE_INF = 2     #: Trigger condition - Pulse/Slope Rise Width <
-FALL_SUP = -125  #: Trigger condition - Pulse/Slope Fall Width >
-FALL_EQU = -124  #: Trigger condition - Pulse/Slope Fall Width =
-FALL_INF = -123  #: Trigger condition - Pulse/Slope Fall Width <
+RISE = RISE_SUP  #: Trigger condition - Edge Rise
+FALL = FALL_SUP  #: Trigger condition - Edge Fall
 
-AUTO = 0    #: Sweep mode - Auto
+AUTO   = 0  #: Sweep mode - Auto
 NORMAL = 1  #: Sweep mode - Normal
-ONCE = 2    #: Sweep mode - Once
+ONCE   = 2  #: Sweep mode - Once
 
-ATTENUATION_THRESHOLD = 5  # voltbase threshold in volt to switch a relay to reduce the voltage input.
-ROLLMODE_THRESHOLD = 2  # timerange threshold in second for rolling mode (slow move).
-
-SAMPLING_RATE = 100E6  # top sampling rate (samples/seconds)
-SAMPLES = 5000  # number of samples in a frame
+ATTENUATION_THRESHOLD = 6  # voltbase threshold to reduce the voltage input.
+ROLLMODE_THRESHOLD = 2500  # sampling rate for switching to roll mode (slow move).
 
 # ADC (Analog-to-digital converter)
-READ_SIZE = 5211  # read size [ 11 headers + 100 trigger samples + 5100 samples ]
-ADC_SIZE = 5100   # ADC buffer size [ 50 pre samples + 5000 samples (frame) + 50 post samples ]
-ADC_MAX = +125    # max sample value
-ADC_MIN = -125    # min sample value
-ADC_RANGE = 250   # sample range
+FRAME_SIZE = 5211  # frame size [ 11 headers + 100 trigger + 5100 ADC ]
+ADC_SIZE   = 5100  # ADC size [ 50 pre samples + 5000 samples + 50 post samples ]
+ADC_MAX    = +125  # max sample value
+ADC_MIN    = -125  # min sample value
+ADC_RANGE  = 250   # sample max - min amplitude
+SAMPLES    = 5000  # number of pertinent samples in a frame
 
 # CALIBRATION
 GAIN = 0  # Gain (correction applyed for a measured signal)
@@ -119,58 +119,57 @@ AMPL = 1  # Zero amplitude (correction applied for a 0v signal with no voltage o
 COMP = 2  # Zero compensation (correction applied for a 0v signal with an offset voltage)
 HTP_ERR = 10  # Horizontal trigger position correction
 
-USB_VENDOR_ID = 0x5345
+# USB
+USB_VENDOR_ID  = 0x5345
 USB_PRODUCT_ID = 0x1234
-USB_INTERFACE = 0
-USB_EP_WRITE = 0x3
-USB_EP_READ = 0x81
-USB_TIMEOUT = 200
+USB_INTERFACE  = 0
+USB_TIMEOUT    = 200
 
 FLASH_SIZE = 2002
 
 
-# Flash memory - 2002 bytes - little endian
-#  Offset  Type        Name              Value
-#  ------  ----------  ----------------  -------------------------------------------------------------------
-#  0       uint16      Flash header      0x55AA  [-86, 85]
-#  2       uint32      Flash version     2
-#     Factory calibration
-#  6       uint16[10]  CH1 Gain          for [ 5mV 10mV 20mV 50mV 100mv 200mv 500mv 1v 2v 5v ]
-#  26      uint16[10]  CH2 Gain          for [ 5mV 10mV 20mV 50mV 100mv 200mv 500mv 1v 2v 5v ]
-#  46      uint16[10]  CH1 Amplitude     for [ 5mV 10mV 20mV 50mV 100mv 200mv 500mv 1v 2v 5v ]
-#  66      uint16[10]  CH2 Amplitude     for [ 5mV 10mV 20mV 50mV 100mv 200mv 500mv 1v 2v 5v ]
-#  86      uint16[10]  CH1 Compensation  for [ 5mV 10mV 20mV 50mV 100mv 200mv 500mv 1v 2v 5v ]
-#  106     uint16[10]  CH2 Compensation  for [ 5mV 10mV 20mV 50mV 100mv 200mv 500mv 1v 2v 5v ]
-#     Registry
-#  206     byte        OEM               0 or 1
-#          char*       Device version    null terminated string - ASCII encoded
-#          char*       Device serial     null terminated string - ASCII encoded
-#          byte[100]   Localizations     0 or 1 for zh_CN, zh_TW, en, fr, es, ru, de, pl, pt_BR, it, ja, ko_KR
-#          uint16      Phase fine        0-255  ???
-#     User calibration (no longer used. now stored in a file)
-#  1006    uint16[10]  CH1 Gain          for [ 5mV 10mV 20mV 50mV 100mv 200mv 500mv 1v 2v 5v ]
-#  ...
-
-# Command: all except GET_DATA
+# Command
 #   Send (little endian)
 #     Offset  Size   Field
 #     0       4      address
 #     4       1      value size (1, 2 or 4)
 #     5       -      value (1, 2 or 4 bytes)
-#   Receive 5 bytes
+#   Receive 5 bytes (little endian)
 #     Offset  Size   Field
-#     0       1      status char (D:68, E:69, G:71, S:83, V:86)
+#     0       1      status char (Null:0, D:68, E:69, G:71, S:83, V:86)
 #     1       4      value
 
-# Command: GET_DATA
+# Command READ_FLASH
+#   Send (little endian)
+#     Offset  Size   Field
+#     0       4      address (0x01b0)
+#     4       1      value size (1)
+#     5       1      value (1)
+#   Receive 2002 bytes (little endian)
+#     Offset  Size        Field             Value
+#     0       uint16      Flash header      0x55AA or 0xAA55
+#     2       uint32      Flash version     2
+#     6       uint16[10]  CH1 Gain          for [ 5mV 10mV 20mV 50mV 100mv 200mv 500mv 1v 2v 5v ]
+#     26      uint16[10]  CH2 Gain          for [ 5mV 10mV 20mV 50mV 100mv 200mv 500mv 1v 2v 5v ]
+#     46      uint16[10]  CH1 Amplitude     for [ 5mV 10mV 20mV 50mV 100mv 200mv 500mv 1v 2v 5v ]
+#     66      uint16[10]  CH2 Amplitude     for [ 5mV 10mV 20mV 50mV 100mv 200mv 500mv 1v 2v 5v ]
+#     86      uint16[10]  CH1 Compensation  for [ 5mV 10mV 20mV 50mV 100mv 200mv 500mv 1v 2v 5v ]
+#     106     uint16[10]  CH2 Compensation  for [ 5mV 10mV 20mV 50mV 100mv 200mv 500mv 1v 2v 5v ]
+#     206     byte        OEM               0 or 1
+#     207     char*       Device version    null terminated string - ASCII encoded
+#             char*       Device serial     null terminated string - ASCII encoded
+#             byte[100]   Localizations     0 or 1 for zh_CN, zh_TW, en, fr, es, ru, de, pl, pt_BR, it, ja, ko_KR
+#             uint16      Phase fine        0-255  ???
+
+# Command GET_DATA
 #   Send (little endian)
 #     Offset  Size  Field
-#     0       4     address
+#     0       4     address (0x1000)
 #     4       1     value size (2)
 #     5       1     channel 1 state ( OFF:0x04 ON:0x05 )
 #     6       1     channel 2 state ( OFF:0x04 ON:0x05 )
 #   Receive 5 bytes starting with 'E' if not ready
-#   Receive 5211 bytes for channel 1 if ON
+#   Receive 5211 bytes for channel 1 if ON and ready
 #     Offset  Size  Field
 #     0       1     channel (CH1=0x00 CH2=0x01)
 #     1       4     time_sum (used by frequency meter)
@@ -178,89 +177,95 @@ FLASH_SIZE = 2002
 #     9       2     cursor (samples count from the right)
 #     11      100   ADC trigger buffer (only used with small time bases)
 #     111     5100  ADC buffer ( 50 pre + 5000 samples + 50 post )
-#   Receive 5211 bytes for channel 2 if ON
-#     ...
+#   Receive 5211 bytes for channel 2 if ON and ready
+
 
 class CMD:
 
     class Cmd:
 
-        def __init__(self, name, address, size, status):
-            self.name    = name     #: str: command name for debug
-            self.address = address  #: str: command address (4 bytes)
-            self.size    = size     #: int: payload size (1 byte)
-            self.status  = status   #: int: expected response status (char)
+        def __init__(self, name, address, struct):
+            self.name    = name             #: str: command name for debug
+            self.address = address          #: str: command address (4 bytes)
+            self.size    = struct.size - 5  #: int: value size
+            self.struct  = struct           #: Struct: command structure for packing
 
-        def pack(self, value):
+        def pack(self, arg):
             try:
-                if isinstance(value, bytes):
-                    assert len(value) == self.size
-                    return array('B', pack('<IB', self.address, self.size) + value)
-                else:
-                    f = (None, '<IBB', '<IBH', None, '<IBI')[self.size]
-                    return array('B', pack(f, self.address, self.size, value))
+                return array('B', self.struct.pack(self.address, self.size, arg))
             except Exception as ex:
-                raise ValueError('Failed to pack %s %s' % (self.name, _hex(value))) from ex
+                raise ValueError('Failed to pack %s %s into %s' % (
+                    self.name, hex(arg), self.struct.format)) from ex
 
-        def log(self, arg, ret=None):
+        def log(self, arg, ret, buffer):
             if DEBUG:
-                print("[ %s %s ] %s" % (self.name, _hex(arg), ret and _hex(ret)))
+                if ret == 5:
+                    # 5 bytes response : status (1 char), value (u32 or 4 [A-Z] chars)
+                    spec = "<c4s" if all(65 <= c <= 90 for c in buffer[1:5]) else "<cI"
+                    status, value = struct.unpack_from(spec, buffer[:5])
+                    print("[ %s %s ] %s %s" % (self.name, hex(arg), status, value))
+                else:
+                    # 5211 bytes response
+                    print("[ %s %s ] %s bytes" % (self.name, hex(arg), ret))
 
 
+    BI   = struct.Struct('<BI')  # u8, u32
+    IBB  = struct.Struct('<IBB')  # u32, u8, u8
+    IBH  = struct.Struct('<IBH')  # u32, u8, u16
+    IBI  = struct.Struct('<IBI')  # u32, u8, u32
+    BIIH = struct.Struct('<BIIH')  # u8, u32, u32, u16
     D, E, G, S, V = 68, 69, 71, 83, 86
 
-    READ_FLASH        =  Cmd('READ_FLASH'           , 0x01b0, 1, S)
-    WRITE_FLASH       =  Cmd('WRITE_FLASH'          , 0x01a0, 1, G)
-    LOAD_FPGA         =  Cmd('LOAD_FPGA'            , 0x4000, 4, D)
-    GET_MACHINE       =  Cmd('GET_MACHINE'          , 0x4001, 1, V)
-    GET_DATA          =  Cmd('GET_DATA'             , 0x1000, 2, S)
-    GET_FPGALOADED    =  Cmd('GET_FPGALOADED'       , 0x0223, 1, E)
-    SET_EMPTY         =  Cmd('SET_EMPTY'            , 0x010c, 1, S)
-    GET_TRIGGERED     =  Cmd('GET_TRIGGERED'        ,   0x01, 1, S)
-    GET_VIDEOTRGD     =  Cmd('GET_VIDEOTRGD'        ,   0x02, 1, S)
-    SET_MULTI         =  Cmd('SET_MULTI'            ,   0x06, 2, S)
-    SET_PEAKMODE      =  Cmd('SET_PEAKMODE'         ,   0x09, 1, S)
-    SET_ROLLMODE      =  Cmd('SET_ROLLMODE'         ,   0x0a, 1, S)
-    SET_CHL_ON        =  Cmd('SET_CHL_ON'           ,   0x0b, 1, S)
-    SET_FORCETRG      =  Cmd('SET_FORCETRG'         ,   0x0c, 1, S)
-    SET_PHASEFINE     =  Cmd('SET_PHASEFINE'        ,   0x18, 2, S)
-    SET_TRIGGER       =  Cmd('SET_TRIGGER'          ,   0x24, 2, S)
-    SET_VIDEOLINE     =  Cmd('SET_VIDEOLINE'        ,   0x32, 2, S)
-    SET_MULTIFREQ     =  Cmd('SET_MULTIFREQ'        ,   0x50, 1, S)
-    SET_TIMEBASE      =  Cmd('SET_TIMEBASE'         ,   0x52, 4, S)
-    SET_SUF_TRG       =  Cmd('SET_SUF_TRG'          ,   0x56, 4, S)
-    SET_PRE_TRG       =  Cmd('SET_PRE_TRG'          ,   0x5a, 2, S)
-    SET_DEEPMEMORY    =  Cmd('SET_DEEPMEMORY'       ,   0x5c, 2, S)
-    SET_RUNSTOP       =  Cmd('SET_RUNSTOP'          ,   0x61, 1, S)
-    GET_DATAFINISHED  =  Cmd('GET_DATAFINISHED'     ,   0x7a, 1, S)
-    GET_STOPPED       =  Cmd('GET_STOPPED'          ,   0xb1, 1, S)
-    SET_CHANNEL       = (Cmd('SET_CHANNEL_CH1'      , 0x0111, 1, S),
-                         Cmd('SET_CHANNEL_CH2'      , 0x0110, 1, S))
-    SET_ZERO_OFF      = (Cmd('SET_ZERO_OFF_CH1'     , 0x010a, 2, S),
-                         Cmd('SET_ZERO_OFF_CH2'     , 0x0108, 2, S))
-    SET_VOLT_GAIN     = (Cmd('SET_VOLT_GAIN_CH1'    , 0x0116, 2, S),
-                         Cmd('SET_VOLT_GAIN_CH2'    , 0x0114, 2, S))
-    SET_SLOPE_THRED   = (Cmd('SET_SLOPE_THRED_CH1'  ,   0x10, 2, S),
-                         Cmd('SET_SLOPE_THRED_CH2'  ,   0x12, 2, S))
-    SET_EDGE_LEVEL    = (Cmd('SET_EDGE_LEVEL_CH1'   ,   0x2e, 2, S),
-                         Cmd('SET_EDGE_LEVEL_CH2'   ,   0x30, 2, S))
-    SET_TRG_HOLDOFF   = (Cmd('SET_TRG_HOLDOFF_CH1'  ,   0x26, 2, S),
-                         Cmd('SET_TRG_HOLDOFF_CH2'  ,   0x2a, 2, S),
-                         Cmd('SET_TRG_HOLDOFF_EXT'  ,   0x26, 2, S))
-    SET_TRG_CDT_EQU_H = (Cmd('SET_TRG_CDT_EQU_H_CH1',   0x32, 2, S),  # FPGA < V3
-                         Cmd('SET_TRG_CDT_EQU_H_CH2',   0x3a, 2, S))  # FPGA < V3
-    SET_TRG_CDT_EQU_L = (Cmd('SET_TRG_CDT_EQU_L_CH1',   0x36, 2, S),  # FPGA < V3
-                         Cmd('SET_TRG_CDT_EQU_L_CH2',   0x3e, 2, S))  # FPGA < V3
-    SET_TRG_CDT_GL    = (Cmd('SET_TRG_CDT_GL_CH1'   ,   0x42, 2, S),  # FPGA < V3
-                         Cmd('SET_TRG_CDT_GL_CH2'   ,   0x46, 2, S))  # FPGA < V3
-    SET_TRG_CDT_HL    = (Cmd('SET_TRG_CDT_HL_CH1'   ,   0x44, 2, S),  # FPGA >= V3
-                         Cmd('SET_TRG_CDT_HL_CH2'   ,   0x48, 2, S))  # FPGA >= V3
-    SET_FREQREF       = (Cmd('SET_FREQREF_CH1'      ,   0x4a, 1, S),
-                         Cmd('SET_FREQREF_CH2'      ,   0x4b, 1, S))
+    READ_FLASH        =  Cmd('READ_FLASH'           , 0x01b0, IBB)  # read_flash
+    WRITE_FLASH       =  Cmd('WRITE_FLASH'          , 0x01a0, IBB)  # write_flash
+    QUERY_FPGA        =  Cmd('QUERY_FPGA'           , 0x0223, IBB)  # FPGA_DOWNLOAD_QUERY_ADD
+    LOAD_FPGA         =  Cmd('LOAD_FPGA'            , 0x4000, IBI)  # FPGA_DOWNLOAD_ADD
+    EMPTY             =  Cmd('EMPTY'                , 0x010c, IBB)  # EMPTY_ADD
+    GET_MACHINE       =  Cmd('GET_MACHINE'          , 0x4001, IBB)  # MACHINE_TYPE_ADD
+    GET_DATA          =  Cmd('GET_DATA'             , 0x1000, IBH)  # GETDATA_ADD
+    GET_TRIGGERED     =  Cmd('GET_TRIGGERED'        ,   0x01, IBB)  # TRG_D_ADD
+    GET_VIDEOTRGD     =  Cmd('GET_VIDEOTRGD'        ,   0x02, IBB)  # VIDEOTRGD_ADD
+    SET_MULTI         =  Cmd('SET_MULTI'            ,   0x06, IBH)  # SYNCOUTPUT_ADD
+    SET_PEAKMODE      =  Cmd('SET_PEAKMODE'         ,   0x09, IBB)  # SAMPLE_ADD
+    SET_ROLLMODE      =  Cmd('SET_ROLLMODE'         ,   0x0a, IBB)  # SLOWMOVE_ADD
+    SET_CHL_ON        =  Cmd('SET_CHL_ON'           ,   0x0b, IBB)  # CHL_ON_ADD
+    SET_FORCETRG      =  Cmd('SET_FORCETRG'         ,   0x0c, IBB)  # FORCETRG_ADD
+    SET_PHASEFINE     =  Cmd('SET_PHASEFINE'        ,   0x18, IBH)  # PHASE_FINE
+    SET_TRIGGER       =  Cmd('SET_TRIGGER'          ,   0x24, IBH)  # TRG_ADD
+    SET_VIDEOLINE     =  Cmd('SET_VIDEOLINE'        ,   0x32, IBH)  # VIDEOLINE_ADD
+    SET_TIMEBASE      =  Cmd('SET_TIMEBASE'         ,   0x52, IBI)  # TIMEBASE_ADD
+    SET_SUF_TRG       =  Cmd('SET_SUF_TRG'          ,   0x56, IBI)  # SUF_TRG_ADD
+    SET_PRE_TRG       =  Cmd('SET_PRE_TRG'          ,   0x5a, IBH)  # PRE_TRG_ADD
+    SET_DEEPMEMORY    =  Cmd('SET_DEEPMEMORY'       ,   0x5c, IBH)  # DM_ADD
+    SET_RUNSTOP       =  Cmd('SET_RUNSTOP'          ,   0x61, IBB)  # RUNSTOP_ADD
+    GET_DATAFINISHED  =  Cmd('GET_DATAFINISHED'     ,   0x7a, IBB)  # datafinished_ADD
+    GET_STOPPED       =  Cmd('GET_STOPPED'          ,   0xb1, IBB)  # CHECK_STOP_ADD
+    SET_CHANNEL       = (Cmd('SET_CHANNEL_CH1'      , 0x0111, IBB),
+                         Cmd('SET_CHANNEL_CH2'      , 0x0110, IBB))
+    SET_ZERO_OFF      = (Cmd('SET_ZERO_OFF_CH1'     , 0x010a, IBH),
+                         Cmd('SET_ZERO_OFF_CH2'     , 0x0108, IBH))
+    SET_VOLT_GAIN     = (Cmd('SET_VOLT_GAIN_CH1'    , 0x0116, IBH),
+                         Cmd('SET_VOLT_GAIN_CH2'    , 0x0114, IBH))
+    SET_SLOPE_THRED   = (Cmd('SET_SLOPE_THRED_CH1'  ,   0x10, IBH),
+                         Cmd('SET_SLOPE_THRED_CH2'  ,   0x12, IBH))
+    SET_EDGE_LEVEL    = (Cmd('SET_EDGE_LEVEL_CH1'   ,   0x2e, IBH),
+                         Cmd('SET_EDGE_LEVEL_CH2'   ,   0x30, IBH))
+    SET_TRG_HOLDOFF   = (Cmd('SET_TRG_HOLDOFF_CH1'  ,   0x26, IBH),
+                         Cmd('SET_TRG_HOLDOFF_CH2'  ,   0x2a, IBH))
+    SET_TRG_CDT_EQU_H = (Cmd('SET_TRG_CDT_EQU_H_CH1',   0x32, IBH),  # FPGA <= V2
+                         Cmd('SET_TRG_CDT_EQU_H_CH2',   0x3a, IBH))  # FPGA <= V2
+    SET_TRG_CDT_EQU_L = (Cmd('SET_TRG_CDT_EQU_L_CH1',   0x36, IBH),  # FPGA <= V2
+                         Cmd('SET_TRG_CDT_EQU_L_CH2',   0x3e, IBH))  # FPGA <= V2
+    SET_TRG_CDT_GL    = (Cmd('SET_TRG_CDT_GL_CH1'   ,   0x42, IBH),
+                         Cmd('SET_TRG_CDT_GL_CH2'   ,   0x46, IBH))
+    SET_TRG_CDT_HL    = (Cmd('SET_TRG_CDT_HL_CH1'   ,   0x44, IBH),  # FPGA >= V3
+                         Cmd('SET_TRG_CDT_HL_CH2'   ,   0x48, IBH))  # FPGA >= V3
+    SET_FREQREF       = (Cmd('SET_FREQREF_CH1'      ,   0x4a, IBB),
+                         Cmd('SET_FREQREF_CH2'      ,   0x4b, IBB))
 
 
 
-class _FlashIO:
+class _FlashStream:
 
     def __init__(self, data):
         self.buffer = bytearray(data)
@@ -269,12 +274,16 @@ class _FlashIO:
     def seek(self, position):
         self.position = position
 
-    def read(self, format):
+    def read(self, spec):
         # read structure
-        sta = Struct(format)
-        res = sta.unpack_from(self.buffer, self.position)
-        self.position += sta.size
+        res = struct.unpack_from(spec, self.buffer, self.position)
+        self.position += struct.calcsize(spec)
         return res if len(res) > 1 else res[0]
+
+    def write(self, spec, *values):
+        # write structure
+        struct.pack_into(spec, self.buffer, self.position, *values)
+        self.position += struct.calcsize(spec)
 
     def read_str(self):
         # read null terminated string
@@ -282,12 +291,6 @@ class _FlashIO:
         txt = self.buffer[self.position: end].decode('ASCII')
         self.position = end + 1
         return txt
-
-    def write(self, format, *values):
-        # write structure
-        sta = Struct(format)
-        sta.pack_into(self.buffer, self.position, *values)
-        self.position += sta.size
 
     def write_str(self, text):
         # write ASCII null terminated string
@@ -297,111 +300,105 @@ class _FlashIO:
 
 
 
-class _parse:
+_min = lambda a, b: b if b < a else a
 
-    SYMBOLS_RATIO = { 'm': 1e-3, 'u': 1e-6, 'n': 1e-9 }
+_max = lambda a, b: b if b > a else a
 
-    def _try_parse(f):
-        @functools.wraps(f)
-        def wrapper(**kwargs):
-            for k, v in kwargs.items():
-                try:
-                    if isinstance(v, str):
-                        return f(v)
-                    return v
-                except Exception as ex:
-                    raise ValueError('Invalid argument %s=%s' % (k, v)) from ex
-        return wrapper
+_clip = lambda x, lo, hi: lo if x < lo else hi if x > hi else x
 
-    @_try_parse
-    def constant(arg):
-        assert arg in __all__
-        return globals()[arg]
+_find_ge = lambda arr, x: bisect.bisect_left(arr, x)
 
-    @_try_parse
-    def ratio(arg):
-        return float(arg.replace('%', 'e-2'))
+_find_le = lambda arr, x: bisect.bisect_right(arr, x) - 1
 
-    @_try_parse
-    def factor(arg):
-        return float(arg.strip('xX'))
+_items = lambda x: x if isinstance(x, (tuple, list)) else (x, )
 
-    @_try_parse
-    def seconds(arg):
-        txt = arg.strip('sS')
-        r = _parse.SYMBOLS_RATIO.get(txt[-1])
-        return float(txt[:-1]) * r if r else float(txt)
+_bits = lambda arr: sum(1 << i for i, x in enumerate(arr) if x)
 
-    @_try_parse
-    def volts(arg):
-        txt = arg.strip('vV')
-        r = _parse.SYMBOLS_RATIO.get(txt[-1])
-        return float(txt[:-1]) * r if r else float(txt)
+_u8 = lambda x: x & 0xff
 
+_u16 = lambda lsb, msb: lsb & 0xff | (msb & 0xff) << 8
 
+_swap16 = lambda x: (x & 0xff00) >> 8 | (x & 0x00ff) << 8
 
-def _clip(value, lower, upper):
-    # Clips a value to lower/upper edges
-    return lower if value < lower else upper if value > upper else value
-
-
-def _hex(arg):
-    if hasattr(arg, '__iter__'):
-        return ' '.join(map(hex, arg))
-    return hex(arg)
-
-
-def _aslist(arg):
-    if isinstance(arg, (list, tuple)):
-        return arg
-    return (arg, )
-
-
-def _to_precision(x, n):
-    return round(x, -int(floor(log10(abs(x or 1)))) + (n - 1))
+_to_precision = lambda x, n: round(x, -int(floor(log10(abs(x or 1)))) + (n - 1))
 
 
 def _iexp10(value, limit):
     # To unsigned integer mantissa and base-10 exponent.
     m, e = value, 0
     while m > limit:
-        m /= 10.0
-        e += 1
+        m, e = m / 10, e + 1
     return round(m), e
 
 
-def _print_calibration(calibration):
-    for i, name in enumerate(('Gain', 'Ampl', 'Comp')):
-        for chl in range(CHANNELS):
-            values = ' '.join(map(str, calibration[i][chl]))
-            print(' * %s CH%s: %s' % (name, chl + 1, values))
+class _parse:
+
+    SCALLING = { 'M':1e6, 'k':1e3, 'm':1e-3, 'u':1e-6, 'n':1e-9 }
+
+    def __new__(cls, txt):
+        r = cls.SCALLING.get(txt[-1])
+        return float(txt[:-1]) * r if r else float(txt)
+
+    def _wrapper(fn):
+        @functools.wraps(fn)
+        def wrapper(**kwargs):
+            for k, v in kwargs.items():
+                try:
+                    return fn(v) if isinstance(v, str) else v
+                except Exception as ex:
+                    raise ValueError('Invalid argument %s=%s' % (k, v)) from ex
+        return wrapper
+
+    @_wrapper
+    def constant(arg):
+        assert arg in __all__
+        return globals()[arg]
+
+    @_wrapper
+    def ratio(arg):
+        return float(arg.replace('%', 'e-2'))
+
+    @_wrapper
+    def factor(arg):
+        return float(arg.strip('Xx'))
+
+    @_wrapper
+    def seconds(arg):
+        return _parse(arg.rstrip('s'))
+
+    @_wrapper
+    def volts(arg):
+        return _parse(arg.rstrip('Vv'))
+
+    @_wrapper
+    def freq(arg):
+        return _parse(arg.rstrip('Hz'))
 
 
 
 class Frame:
-    """ Hold the samples for an input channel. """
+    """ Hold the samples of a channel. """
 
-    def __init__(self, device, channel, buffer, offset, translate, frequency):
-        voltrange = device.voltrange[channel] * device.proberatio[channel]
-        self.buffer = buffer  # array('b'): ADC 8 bits raw samples
-        self.offset = offset  # int: Start index in the buffer
-        self.channel = channel  #: int: `CH1` or `CH2`
-        self.frequency = frequency  #: float: Signal frequency (Hz).
+    def __init__(self, device, channel, buffer, offset, frequency):
+        vr = device.voltrange[channel] * device.probe[channel]
+        self.buffer = buffer  # array('b'): ADC raw samples (8 bits signed)
+        self.channel = channel  #: int: 0:`CH1` or 1:`CH2`
+        self.frequency = frequency  #: float: Measured frequency (Hz).
         self.sx = 1 / device.sampling_rate  # float: X scale, seconds per ADC sample
-        self.sy = voltrange / ADC_RANGE     # float: Y scale, volts per ADC sample
-        self.tx = translate / device.sampling_rate         # float: X translate, seconds
-        self.ty = voltrange * -device.voltoffset[channel]  # float: Y translate, volts
+        self.sy = vr / ADC_RANGE            # float: Y scale, volts per ADC sample
+        self.tx = offset / device.sampling_rate     # float: X translate, seconds
+        self.ty = vr * -device.voltoffset[channel]  # float: Y translate, volts
 
 
     @property
     def _points(self):
-        return np.frombuffer(self.buffer, np.int8, offset=self.offset)
+        return np.frombuffer(self.buffer, np.int8)
 
 
     @property
     def count(self):
         """ int: number of samples . """
-        return len(self.buffer) - self.offset
+        return len(self.buffer)
 
 
     @property
@@ -420,8 +417,8 @@ class Frame:
     @property
     def xlim(self):
         """ tuple: (Left limit, Right limit) . """
-        x1 = self.tx - (self.offset + 1) * self.sx
-        x2 = self.tx + self.count * self.sx
+        x1 = self.tx - self.sx * _max(0, SAMPLES - len(self.buffer))
+        x2 = self.tx + self.sx * len(self.buffer)
         return x1, x2
 
 
@@ -430,7 +427,7 @@ class Frame:
         Returns:
             numpy.ndarray: 1D Numpy array of x values in second.
         """
-        num = len(self.buffer) - self.offset
+        num = len(self.buffer)
         if num:
             start = self.tx
             # TODO check if it needs num - 1 on stop for continuous mode
@@ -449,6 +446,15 @@ class Frame:
         if abs(self.ty) > 1e-3:
             ys += np.float32(self.ty)
         return ys
+
+
+    def is_clipped(self):
+        """
+        Returns:
+            bool: True if the signal is clipped, False otherwise.
+        """
+        ys = self._points
+        return bool(ys.min()) < -125 or bool(ys.max()) > 125
 
 
     def xy(self):
@@ -497,7 +503,7 @@ class Frame:
         return round(v * self.sy + self.ty, 3)
 
 
-    def mean(self):
+    def avg(self):
         """
         Returns:
             float: Average voltage.
@@ -528,6 +534,14 @@ class Frame:
         return round(ys.std() * self.sy, 3)
 
 
+    def freq(self):
+        """
+        Returns:
+            float: Frequency.
+        """
+        return self.frequency
+
+
     def _get_levels(self):
         points = self._points + 128
         counts = np.bincount(points, minlength=256)
@@ -543,10 +557,18 @@ class Frame:
             tuple: Vbase, Vtop.
         """
         lo, hi = self._get_levels()
-        lower = _clip(lo, -125, 125) * self.sy + self.ty
-        upper = _clip(hi, -125, 125) * self.sy + self.ty
+        lower = _clip(lo, ADC_MIN, ADC_MAX) * self.sy + self.ty
+        upper = _clip(hi, ADC_MIN, ADC_MAX) * self.sy + self.ty
         return lower, upper
 
+    def top(self):
+        """
+        Returns:
+            tuple: Vtop.
+        """
+        lo, hi = self._get_levels()
+        upper = _clip(hi, ADC_MIN, ADC_MAX) * self.sy + self.ty
+        return upper
 
     def to_ttl(self, ratio_low=0.2, ratio_high=0.4):
         """ Convert to TTL levels (0 or 1)
@@ -562,8 +584,8 @@ class Frame:
             lo = hi = -127
 
         points = self._points
-        nlo = points > int(lo + (hi - lo) * ratio_low)
         ttl = points > int(lo + (hi - lo) * ratio_high)
+        nlo = points > int(lo + (hi - lo) * ratio_low)
 
         for i in range(1, len(ttl)):
             ttl[i] = ttl[i] or nlo[i] and ttl[i - 1]  # n-1 if neither high or low
@@ -584,7 +606,7 @@ class Frame:
             | Vmin  : minimum
             | Vmax  : maximum
             | Period    : Signal period (second)
-            | Frequence : Frequence (hertz)
+            | Frequency : Frequency (hertz)
             | Phase     : Phase shift (radian)
 
         Returns:
@@ -609,7 +631,7 @@ class Frame:
             bin_freq = bin_i / len(win) / self.sx
             bin_phase = np.angle(yf[bin_i]) + np.pi / 2
             freq = round(self.frequency, 3)
-            phase = round((bin_phase - sum(self.xlim) * freq * np.pi) % (2 * np.pi), 2)
+            phase = round(((bin_phase - sum(self.xlim) * freq * np.pi) % 6.283), 3)
             period = round(1 / freq, 3)
         else:
             period = freq = phase = 0
@@ -644,7 +666,7 @@ class Frame:
             tuple: (frequencies (Hz), normalized magnitudes (Vrms)).
         """
         y = self.y()
-        size = length or 2 ** int(log2(min(len(y), 4096)))
+        size = length or 2 ** int(log2(_min(len(y), 4096)))
         win = window(size) if window else np.full(size, 1)
         trim = (len(y) - len(win)) >> 1
         yfft = np.fft.rfft(y[trim: len(y) - trim] * win)
@@ -662,8 +684,7 @@ class Frame:
         ratio = _parse.ratio(ratio)
         wn = 1 / (ratio * len(self.buffer) / 2)
         b, a = signal.butter(3, wn)
-        self.buffer[self.offset:] = signal.filtfilt(
-            b, a, self.buffer[self.offset:], padlen=200).astype(np.int8)
+        self.buffer = signal.filtfilt(b, a, self.buffer, padlen=200).astype(np.int8)
 
 
     def decode_uart(self, baud=None, bits=8, parity=None, msb=False):
@@ -672,7 +693,7 @@ class Frame:
         Returns:
             list: [ UART(start=, value=, ...), ... ]
         """
-        import decoder
+        from vds1022 import decoder
         return decoder.decode_uart((self,), baud, bits, parity, msb)
 
 
@@ -682,7 +703,7 @@ class Frame:
         Returns:
             list: [ WIRE(start=, value=, ...), ... ]
         """
-        import decoder
+        from vds1022 import decoder
         return decoder.decode_wire(self)
 
 
@@ -691,17 +712,17 @@ class Frames(tuple):
     """ Holds the channels frame (`Frame` `CH1`, `Frame` `CH2`) .
 
     Examples:
-        >>> ch1, ch2 = frames  # destructuring
+        >>> ch1, ch2 = frames  # destructuring not `None` entries
         >>> ch1 = frames[CH1]  # by index
         >>> ch1 = frames.ch1   # by attribute
     """
 
-    def __new__(cls, frames, pulltime):
+    def __new__(cls, frames, clock):
         return tuple.__new__(cls, frames)
 
 
-    def __init__(self, frames, pulltime):
-        self.time = pulltime   #: float: Acquisition time in second
+    def __init__(self, frames, clock):
+        self.clock = clock   #: float: clock from performance counter in seconds.
 
 
     def __repr__(self):
@@ -729,29 +750,44 @@ class Frames(tuple):
 
         for frame in self:
             f = copy(frame)
-            i = f.offset + round((start - f.tx) / f.sx)
-            j = f.offset + round((stop - f.tx) / f.sx)
+            i = round((start - f.tx) / f.sx)
+            j = round((stop - f.tx) / f.sx)
             f.buffer = f.buffer[i: j]
-            f.tx += (i - f.offset) * f.sx
-            f.offset = 0
+            f.tx += i * f.sx
             frames[f.channel] = f
 
-        return Frames(frames, self.time)
+        return Frames(frames, self.clock + f.tx - frame.tx)
+
+
+    def time(self):
+        """ `float`: acquisition time in seconds since the epoch."""
+        clock = time.perf_counter()
+        now = time.time()
+        return now + (self.clock - clock)
+
+
+    def datetime(self):
+        """ `datetime`: acquisition datetime"""
+        clock = time.perf_counter()
+        now = datetime.datetime.now()
+        return now + datetime.timedelta(seconds=self.clock - clock)
 
 
     @property
     def ch1(self):
+        """ `Frame`: Channel 1"""
         return self[0]
 
 
     @property
     def ch2(self):
+        """ `Frame`: Channel 2"""
         return self[1]
 
 
     @property
     def ylim(self):
-        """ tuple: (Lower limit, Upper limit) of all frames . """
+        """ tuple: (Lower limit, Upper limit) of all frames. """
         yy = [ ADC_RANGE * f.sy * r - f.ty for r in (-0.5, 0.5) for f in self ]
         return min(yy), max(yy)
 
@@ -777,7 +813,7 @@ class Frames(tuple):
     def xy(self):
         """
         Returns:
-            tuple: 1D Numpy arrays of x and y values: ( xs, ( ys or None, ys or None ) ) .
+            tuple: 1D Numpy arrays of x and y values: ( xs, ( ys, ... ) ) .
         """
         return self.x(), self.y()
 
@@ -795,7 +831,7 @@ class Frames(tuple):
             | Vmin  : minimum
             | Vmax  : maximum
             | Period    : Signal period (second)
-            | Frequence : Frequence (hertz)
+            | Frequency : Frequency (hertz)
             | Phase     : Phase shift (radian)
 
         Returns:
@@ -821,12 +857,12 @@ class Frames(tuple):
             legend   (list): Optional name each curve. ex: ['Channel 1', 'Channel 2']
             kwargs   (dict): keyworded arguments for the backend library
         """
-        import plotter
 
         if backend == 'bokeh':
+            from vds1022 import plotter
             plotter.BokehChart(self, kwargs).show()
         elif backend == 'matplotlib':
-            import plotter
+            from vds1022 import plotter
             plotter.MatplotlibChart(self, kwargs).show()
         else:
             return self.to_dataframe().plot(backend=backend, **kwargs)
@@ -839,8 +875,8 @@ class Frames(tuple):
         """
         import pandas
         xs = self.x()
-        ys = { f.name:f.y() for f in self }
-        df = pandas.DataFrame(ys, pandas.Float64Index(xs, copy=False), copy=False)
+        ys = { f.name: f.y() for f in self }
+        df = pandas.DataFrame(ys, xs, copy=False)
         # TODO cutom plot on dataframe
         # df.plot = types.MethodType(plot, df)
         return df
@@ -857,7 +893,7 @@ class Frames(tuple):
                    'y': f.y(),
                    'xlim': f.xlim,
                    'ylim': f.ylim
-                } for f in self ]
+                 } for f in self ]
 
 
     def filter(self, ratio=0.1):
@@ -874,7 +910,7 @@ class Frames(tuple):
         Returns:
             list: [ I2C(start=...), ... ]
         """
-        import decoder
+        from vds1022 import decoder
         return decoder.decode_i2c(self)
 
 
@@ -884,7 +920,7 @@ class Frames(tuple):
         Returns:
             list: [ UART(start=, ...), ... ]
         """
-        import decoder
+        from vds1022 import decoder
         return decoder.decode_uart(self, baud, bits, parity, msb)
 
 
@@ -897,22 +933,40 @@ class Frames(tuple):
         Returns:
             `Frames`
         """
-        frames = [ copy(frame) for frame in tuple.__iter__(items[0]) ]
-        for frame in frames:
-            if frame:
-                frame.buffer = np.concatenate([ item[frame.channel].buffer for item in items ])
-        return cls(frames, items[0].time)
+        frames = cls(map(copy, tuple.__iter__(items[0])), items[0].clock)  # clone first entry
+        for frame in frames:  # concat buffers
+            frame.buffer = np.concatenate([ item[frame.channel].buffer for item in items ])
+        return frames
 
 
 
 class Stream:
 
-    def __init__(self, source):
+    def __init__(self, device, source):
+        self._root   = self
+        self._device = device
         self._source = source
-        self._root = self
         self._parent = None
-        self._nodes = []
+        self._nodes  = []
         self._thread = threading.Thread(target=self._run, daemon=True)
+
+
+    def map(self, func):
+        """ Chain a function to process the data.
+
+        Args:
+            func (function)
+        Returns:
+            `Stream`
+        """
+        node = self.__new__(type(self))
+        node._root   = self._root
+        node._parent = self
+        node._func   = func
+        node._nodes  = []
+
+        self._nodes.append(node)
+        return node
 
 
     def _run(self):
@@ -920,20 +974,10 @@ class Stream:
             self._emit(data)
 
 
-    def _new_node(self, func):
-        node = self.__new__(type(self))
-        node._func = func
-        node._root = self._root
-        node._parent = self
-        node._nodes = []
-        self._nodes.append(node)
-        return node
-
-
     def _emit(self, data):
         for stream in self._nodes:
-            new_data = stream._func(data)
-            stream._emit(new_data)
+            data_new = stream._func(data)
+            stream._emit(data_new)
 
 
     def _next(self):
@@ -942,50 +986,54 @@ class Stream:
         return self._func(self._parent._next())
 
 
-    def map(self, func):
-        """ Chain a function to apply on the data.
-
-        Args:
-            func (function)
-        Returns:
-            `Stream`
-        """
-        return self._new_node(func)
-
-
     def agg(self, func):
-        """ Chain an aggregate function to process y values.
+        """ Chain an aggregate function to process a frame.
 
         Args:
-            func (str, function): Either 'rms', 'mean', 'min', 'max' or function.
+            func (function): takes a `Frame` and return a `tuple` (xs, ys CHx, ...).
         Returns:
             `Stream`
         """
-        if isinstance(func, str):
-            func = getattr(Frame, func)
+        self.clock = None
 
         def agg_frames(frames):
-            return [ { 'name': f.name,
-                       'x'   : [ frames.time ],
-                       'y'   : [ func(f) ],
-                       'ylim': f.ylim
-                     } for f in frames ]
+            if self.clock is None:
+                self.clock = frames.clock
+            return frames.clock - self.clock, *( func(f) for f in frames )
 
-        return self._new_node(agg_frames)
+        return self.map(agg_frames)
+
+
+    def avg(self):
+        """ Chain the `Frame.avg` function to aggregate a frame.
+
+        Returns:
+            `Stream`
+        """
+        return self.agg(Frame.avg)
+
+
+    def rms(self):
+        """ Chain a `Frame.rms` function to aggregate a frame.
+
+        Returns:
+            `Stream`
+        """
+        return self.agg(Frame.rms)
 
 
     def sink(self, func):
-        """ Start the source and apply a function on every input.
+        """ Chain a function and start the source.
 
         Args:
             func (function): Function to apply.
         """
-        self._new_node(func)
+        self.map(func)
         if not self._root._thread.is_alive():
             self._root._thread.start()
 
 
-    def plot(self, /, rollover=None, **kwargs):
+    def plot(self, /, interval=1, rollover=None, **kwargs):
         """ Draw the data in a bokeh chart.
 
         Args:
@@ -999,11 +1047,24 @@ class Stream:
             legend   (list): Optional, name each curve. ex: ['Channel 1', 'Channel 2']
             kwargs   (dict): keyworded arguments for the backend library
         """
-        import plotter
+        from vds1022 import plotter
+
         data = self._next()
+
+        if isinstance(data, Frames):
+            data = Frames.to_dict(data)
+        elif isinstance(data, tuple):
+            dev = self._root._device
+            data = [ { 'name': 'CH' + str(chl + 1),
+                       'x'   : data[0],
+                       'y'   : data[1 + i],
+                       'ylim': dev.ylim(chl)
+                     } for i, chl in enumerate(dev.channels()) ]
+
         chart = plotter.BokehChart(data, kwargs, rollover)
+        chart.show()
         self.sink(chart)
-        return chart.show()
+        return chart
 
 
     def to_dataframe(self):
@@ -1017,22 +1078,22 @@ class Stream:
         import streamz
 
         def to_dataframe(data):
-            if isinstance(data, pandas.DataFrame):
-                return data
+            if isinstance(data, tuple):
+                dev = self._root._device
+                xs = data[0: 1]
+                ys = { 'CH' + str(chl + 1): data[1 + i: 2 + i]
+                       for i, chl in enumerate(dev.channels()) }
+                return pandas.DataFrame(ys, xs, copy=False)
             elif isinstance(data, Frames):
                 return Frames.to_dataframe(data)
-            else:
-                xs = next(entry for entry in data)['x']
-                ys = { entry['name']: entry['y'] for entry in data }
-                df = pandas.DataFrame(ys, pandas.Float64Index(xs, copy=False), copy=False)
-                return df
+            elif isinstance(data, pandas.DataFrame):
+                return data
 
         stream = streamz.Stream()
         df = to_dataframe(self._next())
         sdf = stream.to_dataframe(example=df)
         stream.emit(df)
-
-        self._new_node(to_dataframe).sink(stream.emit)
+        self.map(to_dataframe).sink(stream.emit)
         return sdf
 
 
@@ -1041,15 +1102,20 @@ class VDS1022:
     """ Connect to the device (singleton).
 
     Args:
-        firmware (str): Optional, firmware location. Defaults to ``None``.
+        firmware (str): Optional, fpga firmware location. Defaults to ``None``.
+        flash    (str): Optional, flash file for recovery. Defaults to ``None``.
         debug   (bool): Optional, to monitor the commands. Defaults to ``False``.
     """
 
     _instance = None
 
 
-    def __new__(cls, firmware=None, debug=False):
+    def __new__(cls, firmware=None, flash=None, debug=False):        
         self = cls._instance
+
+        global DEBUG
+        DEBUG = debug
+        # logging.basicConfig(level="DEBUG")
 
         if self is None or not self.stop():
             self = cls._instance = object.__new__(cls)
@@ -1058,10 +1124,7 @@ class VDS1022:
         return self
 
 
-    def __init__(self, firmware=None, debug=False):
-        global DEBUG
-        DEBUG = bool(debug)
-        # logging.basicConfig(level="DEBUG")
+    def __init__(self, firmware=None, flash=None, debug=False):
 
         if self._handle:
             self._initialize()
@@ -1077,12 +1140,15 @@ class VDS1022:
 
         # Calibration from local file 'VDS1022xxxxxxxx.json' or flash memory
         self.calibration = None
+        self.calibration_path = None
 
         # USB
         self._usb = None
         self._handle = None
+        self._ep_write = None
+        self._ep_read = None
         self._failures = 0
-        self._writetime = 0
+        self._clock = 0
         self._buffer = array('B', bytes(6000))
 
         # Synchronization / waiter
@@ -1094,25 +1160,31 @@ class VDS1022:
 
         # connect device
         if not self._connect():
-            raise USBError("USB device %s not found" % MACHINE_NAME)
+            raise USBError("USB device %s %4X:%4X not found or locked by another application." % (
+                MACHINE_NAME, USB_VENDOR_ID, USB_PRODUCT_ID))
 
         # initialize device
-        self._load_flash()
-        self._load_calibration()
+        self._load_flash(flash)
+
+        if not flash:
+            self._load_calibration()
+
         self._load_fpga(firmware or FIRMWARE_DIR)
+
         self._initialize()
 
         # Background thread to keep the USB connexion alive
         def run():
             while self._handle:
-                lastwrite = self._writetime
+                clock = self._clock
 
-                if self._stop.wait(2):
+                if self._stop.wait(3):
                     time.sleep(0.01)
-                elif self._writetime == lastwrite:
+                elif self._clock == clock:
                     try:
                         with self._lock:
-                            self._send(CMD.GET_MACHINE, CMD.V)
+                            self._bulk_write(CMD.SET_RUNSTOP.pack(1))  # [ 0:run, 1:stop ]
+                            self._bulk_read(self._buffer)
                     except USBError:
                         _logger.error('Lost connection to device.')
                         self.dispose()
@@ -1134,30 +1206,32 @@ class VDS1022:
         self._stop.clear()
         self._queue.clear()
 
-        # default settings        CH1   CH2
+        # default settings        CH1    CH2
         self.on               = [ False, False ]  # channel 1 on/off state, channel 2 on/off state
+        self.probe            = [ 10   , 10    ]  # ratio of probe
         self.coupling         = [ DC   , DC    ]  # DC: direct current, AC: Alternating Current
-        self.voltrange        = [ 5    , 5     ]  # 5 volts for 10 divisions (doesn't account for the probe rate)
+        self.voltrange        = [ 2    , 2     ]  # 2 volts for 10 divisions (doesn't account for the probe rate)
         self.voltoffset       = [ 0    , 0     ]  # ratio of vertical range from -0.5 to +0.5 ( -0.1 = -1div )
-        self.proberatio       = [ 10   , 10    ]  # ratio of probe
-        self.trigger_position = 0.5    # trigger position in a frame from 0 to 1.
-        self.timerange        = 0.02   # time in second for a captured frame of 5000 samples
-        self.sampling_rate    = 0      # calculated from timerange
-        self.rollmode         = False  # auto-activates if timerange >= ROLLMODE_THRESHOLD
-        self.sweepmode        = None   # trigger sweep mode. AUTO, NORMAL, ONCE
+        self.rollmode         = None   # auto-activates if sampling rate < ROLLMODE_THRESHOLD
+        self.sweepmode        = None   # trigger sweep mode. None, AUTO, NORMAL, ONCE
+        self.sampling_rate    = 250e3  # sampling frequency (samples per second)
+        self.trigger_position = 0      # trigger position from 0 to 1.
 
+        self._push(CMD.SET_CHL_ON, 0)  #  b0:CH1, b1:CH2  [0=OFF 1=ON]
         self._push(CMD.SET_PHASEFINE, self.phasefine)  # ???
         self._push(CMD.SET_PEAKMODE, 0)  # [ 0:off  1:on ]
-        self._push(CMD.SET_PRE_TRG, (ADC_SIZE >> 1) - HTP_ERR)  # pre-trigger size
-        self._push(CMD.SET_SUF_TRG, (ADC_SIZE >> 1) + HTP_ERR)  # post-trigger size
-        self._push(CMD.SET_MULTI, MULTI_IN)  # [ 0:Out  1:PassFail  2:In ]
-        self._push(CMD.SET_TRIGGER, 1)  # MULTI_IN
+        self._push(CMD.SET_PRE_TRG, ADC_SIZE)  # pre-trigger size to max
+        self._push(CMD.SET_SUF_TRG, 0)  # post-trigger size to min
+        self._push(CMD.SET_MULTI, 0)  # [ 0:Out  1:PassFail  2:In ]
+        self._push(CMD.SET_TRIGGER, 0)  # CH1, EDGE, RISE
 
         for chl in range(CHANNELS):
-            self._send(CMD.SET_EDGE_LEVEL[chl], 0x807f)  # 127,-128 to disable triggering while setting levels
+            self._push(CMD.SET_TRG_HOLDOFF[chl], 0x8002)  # 100ns
+            self._push(CMD.SET_EDGE_LEVEL[chl], _u16(127, -128))  # disable triggering
+            self._push(CMD.SET_FREQREF[chl], 20)  # freq meter
             self._push_channel(chl)
 
-        self._push_timerange(self.timerange, self.rollmode)
+        self._push_sampling(self.sampling_rate, self.rollmode)
 
 
     def stop(self):
@@ -1166,30 +1240,28 @@ class VDS1022:
         Returns:
             bool: `True` if succeed, `False` otherwise.
         """
+        if self._handle:
+            self._stop.set()
 
-        if self._handle is None:
-            return False
+            with self._lock:
+                self._queue.clear()
+                try:
+                    self._send(CMD.SET_RUNSTOP, 1)  # [ 0:run, 1:stop ]
+                    self._stop.clear()
+                    return True
+                except USBError as ex:
+                    _logger.error("Stop command failed")
 
+                self._release()
+
+
+    def dispose(self):
+        """ Disconnect the device and release resources. """
         self._stop.set()
 
         with self._lock:
             self._queue.clear()
-            try:
-                self._bulk_send(CMD.SET_RUNSTOP, 1)  # [ 0:run 1:stop ]
-                self._stop.clear()
-                return True
-            except USBError:
-                _logger.error("Stop command failed")
-
-        self._release()
-        return False
-
-
-    def dispose(self):
-        """ Disconnect and release the device. """
-        self._stop.set()
-        self._queue.clear()
-        self._release()
+            self._release()
 
 
     def _connect(self):
@@ -1200,84 +1272,80 @@ class VDS1022:
 
             if desc.idVendor == USB_VENDOR_ID and desc.idProduct == USB_PRODUCT_ID:
                 handle = usb.open_device(dev)
-                usb.claim_interface(handle, USB_INTERFACE)
-                usb.clear_halt(handle, USB_EP_WRITE)
-                usb.clear_halt(handle, USB_EP_READ)
+                try:
+                    usb.claim_interface(handle, USB_INTERFACE)
+                except USBError as ex:
+                    usb.close_device(handle)
+                    continue
+
+                intf = usb.get_interface_descriptor(dev, USB_INTERFACE, 0, 0)
+                addrs = [ intf.endpoint[i].bEndpointAddress for i in range(intf.bNumEndpoints) ]
+                self._ep_write = next( x for x in addrs if x & 0x80 == 0 )
+                self._ep_read  = next( x for x in addrs if x & 0x80 != 0 )
+                self._handle = handle
+                self._usb = usb
 
                 if self._send(CMD.GET_MACHINE, CMD.V) == 1:  # 0:Error 1:VDS1022 3:VDS2052
-                    self._usb = usb
-                    self._handle = handle
                     return True
 
-                usb.release_interface(handle, USB_INTERFACE)
-                usb.close_device(handle)
+                self._release()
 
 
     def _release(self):
         if self._handle:
             try:
                 self._usb.release_interface(self._handle, USB_INTERFACE)
-            except:
-                pass
+            except: pass
             try:
                 self._usb.close_device(self._handle)
-            except:
-                pass
-            self._handle = None
-            self._usb = None
+            except: pass
+
+        self._usb = self._handle = self._ep_write = self._ep_read = None
 
 
     def _bulk_write(self, buffer):
-        gc.collect(0)  # prevents long gc during acquisition
-        self._usb.bulk_write(self._handle, USB_EP_WRITE, USB_INTERFACE, buffer, USB_TIMEOUT)
-        self._writetime = time.perf_counter()
+        gc.collect(0)  # prevents long gc and timeout between write and read
+        self._usb.bulk_write(self._handle, self._ep_write, USB_INTERFACE, buffer, USB_TIMEOUT)
+        self._clock = time.perf_counter()
 
 
     def _bulk_read(self, buffer, size=None):
-        ret = self._usb.bulk_read(self._handle, USB_EP_READ, USB_INTERFACE, buffer, USB_TIMEOUT)
+        ret = self._usb.bulk_read(self._handle, self._ep_read, USB_INTERFACE, buffer, USB_TIMEOUT)
         assert size is None or ret == size, "Expected response length of %s, got %d" % (size, ret)
         self._failures = 0
         return ret
 
 
-    def _bulk_send(self, cmd, arg):
-        self._bulk_write(cmd.pack(arg))
-        self._bulk_read(self._buffer, 5)
-        status, value = unpack_from('<BI', self._buffer)
-        cmd.log(arg, value)
-        assert status == cmd.status, "Unexpected response status: " + chr(status)
-        return value
-
-
     def _send(self, cmd, arg):
         while True:
             try:
-                return self._bulk_send(cmd, arg)
+                self._bulk_write(cmd.pack(arg))
+                ret = self._bulk_read(self._buffer, 5)
+                cmd.log(arg, ret, self._buffer)
+                status, value = CMD.BI.unpack_from(self._buffer)
+                return value
             except USBError as ex:
-                self._on_usb_err(ex, cmd, arg)
+                self._on_usb_err(ex)
 
 
-    def _on_usb_err(self, ex, cmd, arg):
+    def _on_usb_err(self, ex):
         self._failures += 1
         if self._failures > 2:
             raise ex
         self._stop.wait(0.01 * self._failures)
 
 
-    def _push(self, cmd, arg=0):
+    def _push(self, cmd, arg):
         self._queue.pop(cmd, None)  # remove the command if already in queue
         self._queue[cmd] = arg
 
 
     def _submit(self):
-        while self._queue:
-            self._send(*self._queue.popitem(False))
-
-
-    def _halt(self):
-        self._stop.set()
-        with self._lock:
-            self._stop.clear()
+        if self._queue:
+            while self._queue:
+                self._send(*self._queue.popitem(False))
+            return True
+        return False
 
 
     def send(self, cmd, arg):
@@ -1291,7 +1359,8 @@ class VDS1022:
         """
         with self._lock:
             self._queue.pop(cmd, None)
-            self._submit()
+            while self._queue:
+                self._send(*self._queue.popitem(False))
             return self._send(cmd, arg)
 
 
@@ -1303,31 +1372,34 @@ class VDS1022:
         """
         with self._lock:
             self._submit()
-        if self._stop.wait(seconds):
-            raise KeyboardInterrupt()
+            if self._stop.wait(seconds):
+                raise KeyboardInterrupt()
 
 
-    def _load_calibration(self, fname=None):
-        if fname is None:
-            fname = _dir + path.sep + self.serial + '-cals.json'
-
-        for fpath in glob.glob(fname):
+    def _load_calibration(self):
+        for fpath in glob.glob(self.calibration_path):
             with open(fpath, 'r') as f:
                 self.calibration = json.load(f)['cals']
                 if DEBUG:
-                    print("Load " + path.basename(fname))
-                    _print_calibration(self.calibration)
-                return
-
-        self._save_calibration()
+                    print("Load " + path.basename(self.calibration_path))
+                    self.print_calibration()
+                return True
 
 
-    def _save_calibration(self, fname=None):
-        if fname is None:
-            fname = _dir + path.sep + self.serial + '-cals.json'
-
-        with open(fname, 'w') as f:
+    def _save_calibration(self):
+        with open(self.calibration_path, 'w') as f:
             json.dump({'cals': self.calibration}, f, indent=4)
+
+
+    def save_flash(self, fname):
+        """ Save the device flash memory to a file.
+
+        Args:
+            fname (str): Output file name.
+        """
+        with open(fname, 'wb') as f:
+            f.write(self.read_flash())
+        print("Saved flash to\n" + path.abspath(fname))
 
 
     def read_flash(self):
@@ -1336,10 +1408,12 @@ class VDS1022:
         Returns:
             array('B'): array of unsigned bytes
         """
-        self._bulk_write(CMD.READ_FLASH.pack(1))
-        self._bulk_read(self._buffer, FLASH_SIZE)
-        CMD.READ_FLASH.log(1, FLASH_SIZE)
-        return self._buffer[:FLASH_SIZE]
+        with self._lock:
+
+            self._bulk_write(CMD.READ_FLASH.pack(1))
+            ret = self._bulk_read(self._buffer, FLASH_SIZE)
+            CMD.READ_FLASH.log(1, ret, self._buffer)
+            return self._buffer[:FLASH_SIZE]
 
 
     def write_flash(self, source):
@@ -1352,44 +1426,66 @@ class VDS1022:
             with open(source, 'rb') as f:
                 return self.write_flash(f.read())
 
-        buffer = array('B', source)
-        assert len(buffer) == FLASH_SIZE, "Bad flash size. Expected: %d bytes" % FLASH_SIZE
-        assert buffer[0] == 0xAA and buffer[1] == 0x55, "Bad flash header. Expected: 0xAA 0x55"
-        assert self._send(CMD.GET_FPGALOADED, 0) == 1, "Firmware not loaded"
+        self.save_flash('%s-flash-%s.bin' % (self.serial, int(time.time())))
 
-        buffer[0] = 0x55
-        buffer[1] = 0xAA
-        self._send(CMD.WRITE_FLASH, 1)
-        self._bulk_write(buffer)  # fails if the FPGA is not loaded
-        self._bulk_read(buffer, 5)
-        assert buffer[0] == CMD.S, "Bad response status: " + chr(buffer[0])
+        with self._lock:
+
+            buffer = array('B', source)
+            assert len(buffer) == FLASH_SIZE, "Bad flash size. Expected %d bytes" % FLASH_SIZE
+            assert tuple(buffer[:2]) in ((0x55, 0xAA), (0xAA, 0x55)), "Bad flash header"
+            assert self._send(CMD.QUERY_FPGA, 0) == 1, "Firmware not loaded"
+
+            buffer[:2] = array('B', (0x55, 0xAA))
+
+            self._send(CMD.WRITE_FLASH, 1)
+            self._bulk_write(buffer)
+            self._bulk_read(buffer, 5)
+            assert buffer[0] == CMD.S, "Bad response status: " + chr(buffer[0])
+
+        print("Done overwriting Flash memory.")
 
 
-    def save_flash(self, fname=None):
-        """ Save the device flash memory to a file.
-
-        Args:
-            fname (str): Optional, output file name. Defaults to local file.
+    def sync_flash(self):
+        """ Overwrite the device flash memory with the data and calibration
+        of this instance. It automatically creates a backup of the 
+        flash before attempting to overwriting it.
         """
+        writer = _FlashStream(b'\xff' * FLASH_SIZE)
+        writer.write('<HI', 0x55AA, 2)  # flash header, version
+
+        writer.seek(6)
+        for cal in (GAIN, AMPL, COMP):
+            for chl in range(CHANNELS):
+                writer.write('<10H', *self.calibration[cal][chl])
+
+        writer.seek(206)
+        writer.write('<B', self.oem)
+        writer.write_str(self.version.upper())
+        writer.write_str(self.serial.upper())
+        writer.write('<100B', *self.locales)
+        writer.write('<H', self.phasefine)
+
+        self.write_flash(writer.buffer)
+        self._save_calibration()
+
+
+    def _load_flash(self, fname=None):
+
         if fname is None:
-            fname = '%s-FLASH-%s.bin' % (self.serial or MACHINE_NAME, int(time.time()))
+            buffer = self.read_flash()
+        else:
+            with open(fname, 'rb') as f:
+                buffer = f.read()
 
-        print("Save flash memory to " + fname)
-        with open(fname, 'wb') as f:
-            f.write(self.read_flash())
-
-
-    def _load_flash(self):
-
-        reader = _FlashIO(self.read_flash())
+        reader = _FlashStream(buffer)
 
         flash_header, flash_version = reader.read('<HI')
-        assert flash_header == 0x55AA, "Bad flash header %d" % flash_header
-        assert flash_version == 2, "Bad flash version %d" % flash_version
+        assert flash_header in (0x55AA, 0xAA55), "Bad flash header: 0x%X" % flash_header
+        assert flash_version == 2, "Bad flash version: %d" % flash_version
 
         reader.seek(6)
-        self.calibration = [ [ list(reader.read('<10H')) for ch in range(CHANNELS) ]
-                             for i in (GAIN, AMPL, COMP) ]
+        self.calibration = [ [ list(reader.read('<10H')) for _ in range(CHANNELS) ]
+                             for _ in (GAIN, AMPL, COMP) ]
 
         reader.seek(206)
         self.oem       = reader.read('<B')      # 1
@@ -1400,127 +1496,125 @@ class VDS1022:
 
         ver = self.version.upper()
 
-        if ver.startsWith("V2.7.0"):
+        if ver.startswith("V2.7.0"):
             self.vfpga = 3
-        elif ver.startsWith("V2.4.623") || ver.startsWith("V2.6.0"):
+        elif ver.startswith("V2.4.623") or ver.startswith("V2.6.0"):
             self.vfpga = 2
-        elif ver.startsWith("V2.") || ver.startsWith("V1."):
+        elif ver.startswith("V2.") or ver.startswith("V1."):
             self.vfpga = 1
-        elif ver.startsWith("V"):
+        elif ver.startswith("V"):
             self.vfpga = int(ver[1:ver.index(".")])
         else:
-            raise ValueError("Invalid version from flash: %s" % self.version)
+            raise ValueError("Bad device version: %s" % self.version)
+
+        self.calibration_path = path.join(_dir, self.serial + '-cals.json')
 
         if DEBUG:
             crc32 = binascii.crc32(reader.buffer[2:]) & 0xFFFFFFFF
-            print(" oem=%s version=%s serial=%s phasefine=%s crc32=%08X" % (
+            print("# oem=%s version=%s serial=%s phasefine=%s crc32=%08X" % (
                     self.oem, self.version, self.serial, self.phasefine, crc32))
-            _print_calibration(self.calibration)
-
-
-    def sync_flash(self):
-        """ Overwrite the device flash memory with the info and calibration
-        of this instance.
-        """
-        writer = _FlashIO(b'\xff' * FLASH_SIZE)
-        writer.write('<HI', 0x55AA, 2)
-
-        writer.seek(6)
-        for i in (GAIN, AMPL, COMP):
-            for chl in range(CHANNELS):
-                writer.write('<10H', *self.calibration[i][chl])
-
-        writer.seek(206)
-        writer.write('<B', self.oem)
-        writer.write_str(self.version.upper())
-        writer.write_str(self.serial.upper())
-        writer.write('<100B', *self.locales)
-        writer.write('<H', self.phasefine)
-
-        self.write_flash(writer.buffer)
+            self.print_calibration()
 
 
     def _load_fpga(self, source):
 
-        if self._send(CMD.GET_FPGALOADED, 0) == 1:  # 0:Missing  1:Loaded
-            return
+        with self._lock:
 
-        if path.isdir(source):
-            source = path.join(source, 'VDS1022_FPGAV%s_*.bin' % self.vfpga)
+            if self._send(CMD.QUERY_FPGA, 0) == 1:  # 0:Missing  1:Loaded
+                return
 
-        paths = glob.glob(source)
-        assert paths, 'Firmware not found at %s' % source
+            if path.isdir(source):
+                source = path.join(source, 'VDS1022_FPGAV%s_*.bin' % self.vfpga)
 
-        with open(paths[-1], 'rb') as f:
-            dump = f.read()
+            paths = glob.glob(source)
+            assert paths, 'Firmware not found at %s' % source
 
-        if DEBUG:
-            crc32 = binascii.crc32(dump) & 0xFFFFFFFF
-            print("Load firmware %s (CRC32=%08X)" % (path.basename(paths[-1]), crc32))
+            with open(paths[-1], 'rb') as f:
+                dump = f.read()
 
-        size = self._send(CMD.LOAD_FPGA, len(dump))
-        header = Struct('<I')
-        count = ceil(len(dump) / (size - header.size))
+            if DEBUG:
+                crc32 = binascii.crc32(dump) & 0xFFFFFFFF
+                print("Load firmware %s (CRC32=%08X)" % (path.basename(paths[-1]), crc32))
 
-        for i, start in enumerate(range(0, len(dump), size - header.size)):
-            print(" loading firmware part %s/%s" % (i + 1, count), end='\r')
-            buffer = header.pack(i) + dump[start: start + size - header.size]
-            self._bulk_write(array('B', buffer))
-            self._bulk_read(self._buffer, 5)
-            status, value = unpack_from('<BI', self._buffer)
-            assert status == CMD.S, "Bad response status: " + chr(status)
-            assert value == i, "Bad response chunk id. Expected %s, got %s" % (i, value)
+            frame_size = self._send(CMD.LOAD_FPGA, len(dump))
+            assert frame_size > 0, "Bad frame_size: " + frame_size
 
-        print(' ' * 50, end='\r')
+            header = struct.Struct('<I')
+            payload_size = frame_size - header.size
+            frame_count = ceil(len(dump) / payload_size)
+
+            for i, start in enumerate(range(0, len(dump), payload_size)):
+                print(" loading firmware part %s/%s" % (i + 1, frame_count), end='\r')
+
+                self._bulk_write(array('B', header.pack(i) + dump[start: start + payload_size]))
+                self._bulk_read(self._buffer, 5)
+                status, value = CMD.BI.unpack_from(self._buffer)
+                assert status == CMD.S, "Bad status: " + chr(status)
+                assert value == i, "Bad part id. Expected %s, got %s" % (i, value)
+
+            print(' ' * 50, end='\r')
 
 
-    def set_channel(self, channel, coupling, range, offset=0, probe=1, on=True):
+    def set_channel(self, channel, coupling=DC, range=20, offset=0.5, probe=10):
         """ Configure a channel.
 
         Args:
             channel  (int, str): Channel: `CH1`, `CH2`
             coupling (int, str): Coupling: `DC`, `AC`, `GND`
-            range    (int, str): Volt range for 10 divs from `VOLTRANGES`
-            offset      (float): Optional volt offset [-0.5 to 0.5]. Defaults to ``0``.
-            probe    (int, str): Optional probe ratio (ex: 10 or 'x10'). Defaults to ``1``.
-            on           (bool): Optional, turn on/off the channel. Defaults to ``True``
+            range    (int, str): Volt range at the probe for 10 divs. Defaults to ``20v``
+            offset      (float): Optional volt zero offset [0 to 1]. Defaults to ``1/2``
+            probe    (int, str): Optional probe ratio (ex: 10 or 'x10'). Defaults to ``10``
+        Examples:
+            >>> dev.set_channel(CH1, AC, '10v', probe='10x')
+            >>> dev.set_channel(CH2, DC, '10v', offset=2/10, probe='10x')
         """
+        chl       = _parse.constant(channel=channel)
+        coupling  = _parse.constant(coupling=coupling)
+        voltrange = _parse.volts(range=range)
+        offset    = _parse.ratio(offset=offset)
+        probe     = _parse.factor(probe=probe)
 
-        chl      = _parse.constant(channel=channel)
-        coupling = _parse.constant(coupling=coupling)
-        range    = _parse.volts(range=range)
-        offset   = _parse.ratio(offset=offset)
-        probe    = _parse.factor(probe=probe)
+        assert chl in (CH1, CH2), "Parameter channel out of range: %s" % chl
+        assert 0 <= offset <= 1, "Parameter offset out of range: %s" % offset
+        assert probe >= 1, "Parameter probe out of range: %s" % probe
 
-        voltrange = VOLTRANGES[bisect_left(VOLTRANGES, round(range, 3))]
-        if voltrange != range:
-            print("Volt range %sV not available - selected %sV instead." % (range, voltrange))
+        vr_ask = round(voltrange / probe, 3)
+        vr_new = VOLT_RANGES[_find_ge(VOLT_RANGES, vr_ask)]
+        if vr_new != vr_ask:
+            print("%sv range not available, selecting %sv range."
+                    % (voltrange, vr_new * probe))
 
-        assert -0.5 <= offset <= 0.5, "Parameter offset out of range: %s" % offset
-
-        self.on[chl] = bool(on)
+        self.on[chl] = True
         self.coupling[chl] = coupling
-        self.voltrange[chl] = voltrange
-        self.voltoffset[chl] = offset
-        self.proberatio[chl] = probe
+        self.voltrange[chl] = vr_new
+        self.voltoffset[chl] = offset - 0.5
+        self.probe[chl] = probe
 
         self._push_channel(chl)
 
 
+    def channels(self):
+        """
+        Returns:
+            iter: Iterator of the enabled channels.
+        """
+        return (i for i, on in enumerate(self.on) if on)
+
+
     def _push_channel(self, chl):
 
-        vb = VOLTRANGES.index(self.voltrange[chl])
+        vb = VOLT_RANGES.index(self.voltrange[chl])
         pos0 = ADC_RANGE * self.voltoffset[chl]
-        attenuate = self.voltrange[chl] >= ATTENUATION_THRESHOLD
+        attenuate = vb >= ATTENUATION_THRESHOLD
         cal_comp = self.calibration[COMP][chl][vb]
         cal_ampl = self.calibration[AMPL][chl][vb]
         cal_gain = self.calibration[GAIN][chl][vb]
 
         zero_arg = _clip(round(cal_comp - pos0 * cal_ampl / 100), 0, 4095)
-        self._push(CMD.SET_ZERO_OFF[chl], zero_arg)
+        self._push(CMD.SET_ZERO_OFF[chl], zero_arg)  # set offset, doesn't clear samples
 
         gain_arg = _clip(cal_gain, 0, 4095)
-        self._push(CMD.SET_VOLT_GAIN[chl], gain_arg)
+        self._push(CMD.SET_VOLT_GAIN[chl], gain_arg)  # set voltbase and clear samples
 
         # SET_CHANNEL
         #  b0  : not defined [ 0 ]
@@ -1530,12 +1624,7 @@ class VDS1022:
         #  b5-6: channel coupling [ 0:DC 1:AC 2:GND ]
         #  b7  : channel on/off [ 0:OFF 1:ON ]
         chl_arg = attenuate << 1 | self.coupling[chl] << 5 | self.on[chl] << 7
-        self._push(CMD.SET_CHANNEL[chl], chl_arg)
-
-        # SET_CHL_ON
-        #  b0: bit 0 = CH1 [0=OFF 1=ON],  bit 1 = CH2 [0=OFF 1=ON]
-        # on_arg = sum(1 << i for i, on in enumerate(self.on))
-        # self._push(CMD.SET_CHL_ON, on_arg)
+        self._push(CMD.SET_CHANNEL[chl], chl_arg)  # set channel and clear samples
 
 
     def set_channel_ext(self, state):
@@ -1545,8 +1634,8 @@ class VDS1022:
             state (int): 0:Low  1:Hi 5v
         """
         # SET_MULTI
-        #  b0: Multi mode [ 0:Trigger Out  1:Pass/Fail Out  2:Trigger In ]
-        #  b1: Pass/Fail state  [ 0:TTL low 0v  1:TTL hi 5v ]
+        #  b0-1 : Multi mode [ 0:Trigger Out  1:Pass/Fail Out  2:Trigger In ]
+        #  b8   : Pass/Fail output state  [ 0:TTL low 0v  1:TTL hi 5v ]
         multi_arg = MULTI_PF | (state & 1) << 8
         self.send(CMD.SET_MULTI, multi_arg)
 
@@ -1560,53 +1649,54 @@ class VDS1022:
         self._push(CMD.SET_PEAKMODE, enable & 1)  # [ 0:off  1:on ]
 
 
-    def set_sampling_rate(self, rate, rollmode=None):
+    def set_sampling(self, rate, rollmode=None):
         """ Configure the sampling rate
 
         Args:
-            rate      (int): Sampling rate Ms/s, from 3 to 100e6
-            rollmode (bool): Optional, sets roll mode. Defaults to sampling rate >= 2500 Ms/s
+            rate      (int): Sampling rate, from 2.5 to 100M samples per second.
+            rollmode (bool): Optional, sets the roll mode. Defaults to sampling rate >= 2500
         """
-        assert 3 <= rate <= SAMPLING_RATE, "Parameter rate out of range [ 1: 100e6 ]"
-        timerange = SAMPLES / rate
-        self._push_timerange(timerange, rollmode)
+        rate = _parse.freq(rate=rate)
+        assert SAMPLING_RATES[0] <= rate <= SAMPLING_RATES[-1], "Parameter rate out of range"
+        self._push_sampling(rate, rollmode)
 
 
     def set_timerange(self, range, rollmode=None):
-        """ Configure the sampling rate
+        """ Configure the sampling rate for 5000 samples for a given time range.
 
         Args:
-            timerange (float,str): Range in seconds from 50e-6 (50us) to 2000 (2000s)
-            rollmode       (bool): Optional, sets roll mode. Defaults to timerange >= 2s
+            range (float,str): Frame duration in seconds from 50e-6 (50us) to 2000 (2000s)
+            rollmode   (bool): Optional, sets the roll mode. Defaults to timerange >= 2s
         """
         timerange = _parse.seconds(range=range)
-        assert TIMERANGES[0] <= timerange <= TIMERANGES[-1], \
-            "Parameter range not in range [ 50e-6: 2000 ]"
-        self._push_timerange(timerange, rollmode)
+        rate = SAMPLES / timerange
+        assert SAMPLING_RATES[0] <= rate <= SAMPLING_RATES[-1], "Parameter range out of range"
+        self._push_sampling(rate, rollmode)
 
 
-    def _push_timerange(self, timerange, rollmode):
+    def _push_sampling(self, rate, rollmode):
 
-        sampling_rate = round(SAMPLES / timerange)
-        sampling_factor = max(1, round(SAMPLING_RATE / sampling_rate))
+        prescaler = _max(1, round(SAMPLING_RATES[-1] / rate))
 
-        self.sampling_rate = round(SAMPLING_RATE / sampling_factor)
-        self.timerange = SAMPLES / self.sampling_rate
-        self.rollmode = self.timerange >= ROLLMODE_THRESHOLD if rollmode is None else rollmode
+        self.sampling_rate = SAMPLING_RATES[-1] / prescaler
+        self.rollmode = self.sampling_rate < ROLLMODE_THRESHOLD if rollmode is None else rollmode
 
-        self._push(CMD.SET_TIMEBASE, sampling_factor)
+        self._push(CMD.SET_TIMEBASE, prescaler)
         self._push(CMD.SET_ROLLMODE, self.rollmode & 1)
-        self._push(CMD.SET_DEEPMEMORY, ADC_SIZE)
+        # adding +3 to fix bad samples at the end when roll mode is on.
+        self._push(CMD.SET_DEEPMEMORY, ADC_SIZE + (3 if self.rollmode else 0))
 
 
-    def set_trigger(self, source, mode, condition,
+    def set_trigger(self,
+                    source,
+                    mode=EDGE,
+                    condition=RISE,
                     position=0.5,
                     level=0,
                     width=30e-9,
                     holdoff=100e-9,
-                    alternate=False,
-                    sweep=AUTO):
-        """ Configure a trigger
+                    sweep=ONCE):
+        """ Configure a trigger.
 
         Args:
             source      (int): Channel index: `CH1` `CH2` `EXT` .
@@ -1615,31 +1705,34 @@ class VDS1022:
                                Slop/Pulse: `RISE_SUP`, `RISE_EQU`, `RISE_INF`, 
                                            `FALL_SUP`, `FALL_EQU`, `FALL_INF` .
             position  (float): Optional horizontal trigger position from 0 to 1.
-                               Defaults to ``0.5`` .
+                               Defaults to ``1/2`` .
             level (float,str): Optional trigger level in volt. Pair of hi and low if SLOPE mode.
                                Defaults to ``0v`` .
             width     (float): Optional condition width in second for PULSE/SLOPE mode only.
                                Defaults to ``30ns``.
             holdoff   (float): Optional time in second before the next trigger can occur.
                                Defaults to ``100ns``.
-            alternate  (bool): Optional alternate triggering for both CH1 and CH2.
-                               Defaults to ``False``.
             sweep       (int): Optional sweep mode: `AUTO`, `NORMAL`, `ONCE`.
-                               Defaults to `AUTO`.
+                               Defaults to `ONCE`.
         Examples:
-            >>> dev.set_trigger(CH1, EDGE, RISE, level='2.5v', sweep=ONCE)
-            >>> dev.set_trigger(CH1, PULSE, RISE_SUP, level='2.5v', width='2ms', sweep=ONCE)
-            >>> dev.set_trigger(CH1, SLOPE, RISE_SUP, level=('1v', '4v'), width='20ms', sweep=ONCE)
+            >>> dev.set_trigger(CH1, EDGE, RISE, position=1/2, level='2.5v')
+            >>> dev.set_trigger(CH1, PULSE, RISE_SUP, position=1/2, level='2.5v', width='2ms')
+            >>> dev.set_trigger(CH1, SLOPE, RISE_SUP, position=1/2, level=('1v', '4v'), width='20ms')
         """
 
         chl       = _parse.constant(source=source)
         mode      = _parse.constant(mode=mode)
-        position  = _parse.ratio(position=position)
-        levels    = [ _parse.volts(level=v) for v in _aslist(level) ]
         condition = _parse.constant(condition=condition)
+        position  = _parse.ratio(position=position)
+        levels    = [ _parse.volts(level=v) for v in _items(level) ]
         width     = _parse.seconds(width=width)
         holdoff   = _parse.seconds(holdoff=holdoff)
         sweep     = _parse.constant(sweep=sweep)
+
+        self.sweepmode = sweep
+
+        # alternate mode if previous command is SET_TRIGGER and channel is not external
+        alternate = chl != EXT and next(reversed(self._queue)) is CMD.SET_TRIGGER
 
         # external channel
         multi = (MULTI_OUT, MULTI_IN)[chl == EXT]
@@ -1649,13 +1742,51 @@ class VDS1022:
         #            | max left  |   center   | max right
         #  position  |    0      |    0.5     |    1
         #  pre, post | 50, 5050  | 2550, 2550 | 5050, 50
-        htp = round(SAMPLES * _clip(position - 0.5, -0.5, 0.5))
+        htp = round(SAMPLES * _clip(0.5 - position, -0.5, 0.5))
         self._push(CMD.SET_PRE_TRG, (ADC_SIZE >> 1) - htp - HTP_ERR)
         self._push(CMD.SET_SUF_TRG, (ADC_SIZE >> 1) + htp + HTP_ERR)
         self.trigger_position = position
 
+        if chl == EXT:
+            assert mode == EDGE, "Trigger mode not supported with external channel: %s" % mode
+        else:
+            # edge/pulse/slope level
+            vr = self.probe[chl] * self.voltrange[chl]
+            lvls = [ round((v / vr + self.voltoffset[chl]) * ADC_RANGE) for v in levels ]
+            if mode in (EDGE, PULSE):
+                assert len(lvls) == 1, "Parameter level requires 1 value only"
+                v = lvls[0] + (10 if condition < 0 else 0)  # +10 if fall condition
+                assert ADC_MIN + 10 <= v <= ADC_MAX, "Parameter level not in range: %s" % levels[0]
+                self._push(CMD.SET_EDGE_LEVEL[chl], _u16(v, v - 10))  # trigger level
+                self._push(CMD.SET_FREQREF[chl], _u8(v - 5))  # freq meter
+            elif mode == SLOPE:
+                assert len(lvls) == 2, "Parameter level requires 2 values"
+                assert ADC_MIN <= lvls[0] <= ADC_MAX, "Parameter level[0] not in range %s" % levels[0]
+                assert ADC_MIN <= lvls[1] <= ADC_MAX, "Parameter level[1] not in range %s" % levels[1]
+                self._push(CMD.SET_SLOPE_THRED[chl], _u16(max(lvls), min(lvls)))
+                self._push(CMD.SET_FREQREF[chl], _u8(sum(lvls) // 2))  # freq meter
+
+            # pulse/slope width
+            if mode in (PULSE, SLOPE):
+                if self.vfpga < 3:  # if old boards
+                    m, e = _iexp10(width * 1e8, 1023)  # to 10th ns, 10bits mantissa, base10 exponent
+                    if condition in (RISE_EQU, FALL_EQU):
+                        self._push(CMD.SET_TRG_CDT_EQU_H[chl], int(m * 1.05) << 6 | e & 7)
+                        self._push(CMD.SET_TRG_CDT_EQU_L[chl], int(m * 0.95))
+                    else:
+                        self._push(CMD.SET_TRG_CDT_GL[chl], m)
+                        self._push(CMD.SET_TRG_CDT_EQU_H[chl], e)
+                else:  # newer boards
+                    m = width * 1e8  # sec to 10th of ns
+                    self._push(CMD.SET_TRG_CDT_GL[chl], int(m % 65536))
+                    self._push(CMD.SET_TRG_CDT_HL[chl], int(m / 65536))
+
+        # holdoff time
+        m, e = _iexp10(holdoff * 1e8, 1023)  # to 10th ns, 10bits mantissa, base10 exponent
+        self._push(CMD.SET_TRG_HOLDOFF[chl % CHANNELS], _swap16(m << 6 | e & 7))
+
         # trigger settings
-        # bit 0 : source [ 0:channel 1:external ]
+        # bit 0 : source [ 0:channel 1:external/multi ]
         # bit 15: type [ 0:single 1:alternate ]
         trg = (chl == EXT) & 1 | (alternate & 1) << 15
 
@@ -1681,57 +1812,15 @@ class VDS1022:
             raise NotImplementedError("Trigger mode not supported: " + str(mode))
 
         self._push(CMD.SET_TRIGGER, trg)
-        self.sweepmode = sweep
-
-        if chl == EXT:
-            assert mode == EDGE, "Trigger mode not supported with external channel: %s" % mode
-        else:
-            # edge/pulse/slope level
-            lvls = [ round((v / self.voltrange[chl] + self.voltoffset[chl]) * ADC_RANGE) for v in levels ]
-            if mode in (EDGE, PULSE):
-                assert len(lvls) == 1, "Parameter level requires 1 value only"
-                v = lvls[0] + (10 if condition < 0 else 0)  # +10 if fall condition
-                assert ADC_MIN + 10 <= v <= ADC_MAX, "Parameter level not in range: %s" % levels[0]
-                self._push(CMD.SET_EDGE_LEVEL[chl], pack('bb', v, v - 10))
-            elif mode == SLOPE:
-                assert len(lvls) == 2, "Parameter level requires 2 values"
-                assert ADC_MIN <= lvls[0] <= ADC_MAX, "Parameter level[0] not in range %s" % levels[0]
-                assert ADC_MIN <= lvls[1] <= ADC_MAX, "Parameter level[1] not in range %s" % levels[1]
-                self._push(CMD.SET_SLOPE_THRED[chl], pack('bb', max(lvls), min(lvls)))
-
-            # pulse/slope width
-            if mode in (PULSE, SLOPE):
-                if self.vfpga < 3:  # if fpga version < 3
-                    m, e = _iexp10(width * 1e8, 1023)  # to 10th ns, 10bits mantissa, base10 exponent
-                    if condition in (FALL_EQU, RISE_EQU):
-                        self._push(CMD.SET_TRG_CDT_EQU_H[chl], int(m * 1.05) << 6 | e & 7)
-                        self._push(CMD.SET_TRG_CDT_EQU_L[chl], int(m * 0.95))
-                    else:
-                        self._push(CMD.SET_TRG_CDT_GL[chl], m)
-                        self._push(CMD.SET_TRG_CDT_EQU_H[chl], e)
-                else:
-                    m = width * 1e8  # sec to 10th of ns
-                    self._push(CMD.SET_TRG_CDT_GL[chl], int(m % 65536))
-                    self._push(CMD.SET_TRG_CDT_HL[chl], int(m / 65536))
-
-        # holdoff time
-        m, e = _iexp10(holdoff * 1e8, 1023)  # to 10th ns, 10bits mantissa, base10 exponent
-        self._push(CMD.SET_TRG_HOLDOFF[chl], pack('>H', m << 6 | e & 7))
-
-        self.wait(0.1)
-        self.send(CMD.SET_TRIGGER, trg)
-        self.send(CMD.SET_EMPTY, 0)
 
 
     def get_triggered(self):
         """
         Returns:
-            int: Trigger state of each channel: ``bit0:ch1`` ``bit2:ch2``. First two bits if `EXT` trigger.
+            int: Trigger state: ``CH1:bit0`` ``CH2:bit2`` ``EXT:bit1-bit2``.
         """
         trg_d = self.send(CMD.GET_TRIGGERED, 0)
-        for i, on in enumerate(self.on):
-            trg_d &= ~((on ^ 1) << i)
-        return trg_d
+        return trg_d & _bits(self.on)
 
 
     def force_trigger(self):
@@ -1748,13 +1837,13 @@ class VDS1022:
             tuple: (lower, upper)
         """
         if channel is None:
-            yy = [ self.voltrange[chl] * self.proberatio[chl] * (r - self.voltoffset[chl])
+            yy = [ self.voltrange[chl] * self.probe[chl] * (r - self.voltoffset[chl])
                    for r in (-0.5, 0.5)
-                   for chl, on in enumerate(self.on) if on ]
+                   for chl, on in self.on if on ]
             return min(yy), max(yy)
         else:
             chl = _parse.constant(channel=channel)
-            voltrange = self.voltrange[chl] * self.proberatio[chl]
+            voltrange = self.voltrange[chl] * self.probe[chl]
             ty = voltrange * -self.voltoffset[chl]
             return ty - voltrange / 2, ty + voltrange / 2
 
@@ -1765,40 +1854,41 @@ class VDS1022:
         Returns:
             tuple: (left, right)
         """
-        timerange = self.timerange
+        timerange = SAMPLES / self.sampling_rate
         tx = timerange * (0.5 - self.trigger_position)
         return tx - timerange / 2, tx + timerange / 2
 
 
-    def plot(self, freq=0.2, autorange=False, autosense=False, **kwargs):
+    def plot(self, freq=3, autorange=False, autosense=False, **kwargs):
         """ Live plotting.
 
         Args:
-            freq     (float): Refresh interval (seconds). Defaults to 200ms.
-            autorange (bool): Optional, auto adjusts the voltrange. Defaults to False.
-            autosense (bool): Optional, auto adjusts the trigger level to 50%. Defaults to `False`.
+            freq       (int): Refresh frequency. Defaults to 3Hz.
+            autorange (bool): Optional, auto-adjusts the voltrange. Defaults to False.
+            autosense (bool): Optional, auto-adjusts the trigger level to 50%. Defaults to `False`.
             kwargs    (dict): keyworded arguments for the backend library
         """
-        import plotter
-        self._halt()
+        from vds1022 import plotter
 
-        source = self.pull_iter(freq, autorange, autosense)
-        frames = next(source)
+        fetch = self.fetch_iter(freq, autorange, autosense)
+        frames = next(fetch)
         chart = plotter.BokehChart(frames, kwargs).show()
 
-        def run():
-            for frames in source:
-                chart.update(frames)
+        if self.sweepmode != ONCE:
 
-        threading.Thread(target=run, daemon=True).start()
+            def run():
+                for frames in fetch:
+                    chart.update(frames)
+
+            threading.Thread(target=run, daemon=True).start()
 
 
-    def stream(self, freq=0.2, autorange=False):
+    def stream(self, freq=3, autorange=False):
         """ To stream non continuous frames of 5000 points.
         The frames are pulled at an interval defined by freq.
 
         Args:
-            freq     (float): Optional, pull interval (seconds). Defaults to 1s.
+            freq     (float): Optional, acquisition frequency. Defaults to 3Hz.
             autorange (bool): Optional, auto adjusts the voltrange and offset. Defaults to ``False``.
         Returns:
             `Stream`
@@ -1808,10 +1898,9 @@ class VDS1022:
             >>> from vds1022 import *
             >>>
             >>> dev = VDS1022()
-            >>> dev.set_timerange('10ms')
-            >>> dev.set_channel(CH1, range='10v', coupling=DC, offset=0, probe='x1')
-            >>> dev.set_channel(CH2, range='10v', coupling=DC, offset=0, probe='x1')
-            >>> dev.stream(freq=1).agg('rms').plot()
+            >>> dev.set_channel(CH1, range='10v', coupling=DC, offset=1/10, probe='x1')
+            >>> dev.set_channel(CH2, range='10v', coupling=DC, offset=1/10, probe='x1')
+            >>> dev.stream(freq=3).agg('rms').plot()
 
             Stream plotting with customised aggregation
 
@@ -1825,16 +1914,14 @@ class VDS1022:
 
             >>> src = dev.stream(freq=1).agg('rms').sink(print)
         """
-        source = self.pull_iter(freq, autorange)
-        stream = Stream(source)
-        return stream
+        fetch = self.fetch_iter(freq, autorange)
+        return Stream(self, fetch)
 
 
-    def pull(self, delay=0.1, autorange=False):
-        """ To acquire a sampling frame of 5000 points.
+    def fetch(self, autorange=False):
+        """ To acquire a single sampling frame per channel.
 
         Args:
-            delay     (float): Wait time before pulling the samples. Defaults to 100ms.
             autorange (float): Optional, automatically adjusts the voltrange. Defaults to False.
         Returns:
             `Frames`: (`Frame` `CH1`, `Frame` `CH2`)
@@ -1842,271 +1929,366 @@ class VDS1022:
             >>> from vds1022 import *
             >>>
             >>> dev = VDS1022()
-            >>> dev.set_timerange('100ms', rollmode=None)
-            >>> dev.set_channel(CH1, range='10v', coupling=AC, offset=0, probe='x10')
-            >>> dev.set_channel(CH2, range='20v', coupling='DC', offset=0, probe='x10')
-            >>> dev.set_trigger(CH1, mode=EDGE, condition=RISE, alternate=False, sweep=ONCE)
-            >>> frames = dev.pull()
+            >>> dev.set_timerange('100ms')
+            >>> dev.set_channel(CH1, range='10v', coupling=AC, offset=1/2, probe='x10')
+            >>> dev.set_channel(CH2, range='20v', coupling='DC', offset=1/2, probe='x10')
+            >>> dev.set_trigger(CH1, mode=EDGE, condition=RISE, sweep=ONCE)
+            >>> frames = dev.fetch()
             >>> print(frames)
         """
-        return next(self.pull_iter(delay, autorange))
+        return next(self.fetch_iter(3, autorange, False))
 
 
-    def read(self, duration, pre=None):
-        """ To acquire continuous samples for a defined time from the start or on a trigger.
-        The maximum sampling rate is arround 100Kbs/s.
-        It will raise an error if it misses some samples.
+    def fetch_iter(self, freq=3, autorange=False, autosense=False):
+        """Generator to acquire multiple sampling frames.
 
         Args:
-            duration (float): Time from start in second or post-trigger time if a trigger is set.
-            pre      (float): Optional pre-trigger time in second. Defauts to timerange if None.
-        Returns:
-            `Frames`: (`Frame` `CH1`, `Frame` `CH2`)
-        Example:
-            Acquire continuous samples for a defined time:
-
-            >>> from vds1022 import *
-            >>>
-            >>> dev = VDS1022()
-            >>> dev.set_timerange('100ms')
-            >>> dev.set_channel(CH1, range='10v', coupling='DC', offset=-1/4, probe='x10')
-            >>> frames = dev.read('5s')
-            >>> frames
-
-            Acquire continuous samples on a trigger:
-
-            >>> dev = VDS1022()
-            >>> dev.set_timerange('100ms')
-            >>> dev.set_channel(CH1, range='10v', coupling='DC', offset=-1/4, probe='x10')
-            >>> dev.set_trigger(CH1, mode=EDGE, condition=RISE, alternate=False, sweep=ONCE)
-            >>> frames = dev.read('2s', pre='1s')
-            >>> frames
-        """
-        duration = _parse.seconds(duration=duration)
-        pre = _parse.seconds(pre=pre) if pre else 0
-        freq = min(1, self.timerange / 2)
-        items = collections.deque()
-        starttime = None
-        endtime = None
-
-        self._halt()
-
-        if self.sweepmode:
-            for frames in self.read_iter(freq):
-                items.append(frames)
-                now = frames.time
-
-                if starttime is None:
-                    starttime = now
-
-                if endtime is None:
-                    if self.get_triggered():
-                        endtime = now + max(0, duration - freq)
-                        if DEBUG:
-                            print("Triggered at %f seconds" % (now - starttime))
-
-                    while items and now - items[0].time > pre:
-                        items.popleft()
-
-                elif now > endtime:
-                    return Frames.concat(items)
-        else:
-            for frames in self.read_iter(freq):
-                items.append(frames)
-                if endtime is None:
-                    endtime = frames.time + max(0, duration - freq)
-                if frames.time > endtime:
-                    return Frames.concat(items)
-
-
-    def pull_iter(self, freq=0, autorange=False, autosense=False):
-        """Generator to retrieve sampling frames.
-
-        Args:
-            freq     (float): Optional, wait time before pulling the next frame. Defaults to `0`.
-            autorange (bool): Optional, auto adjusts the voltrange and offset. Defaults to `False`.
-            autosense (bool): Optional, auto adjusts the trigger level to 50%. Defaults to `False`.
+            freq     (float): Optional, iteration frequency. Defaults to `3Hz`.
+            autorange (bool): Optional, auto-adjusts the voltrange and offset. Defaults to `False`.
+            autosense (bool): Optional, auto-adjusts the trigger level to 50%. Defaults to `False`.
         Yields:
             `Frames`: (`Frame` `CH1`, `Frame` `CH2`)
         Examples:
             >>> from vds1022 import *
             >>>
             >>> dev = VDS1022(debug=False)
-            >>> dev.set_timerange('100ms', rollmode=None)
-            >>> dev.set_channel(CH1, range='10v', coupling='DC', offset=0, probe='x10')
-            >>> dev.set_channel(CH2, range='20v', coupling='DC', offset=0, probe='x10')
-            >>> dev.set_trigger(CH1, mode=EDGE, condition=RISE, alternate=False, sweep=AUTO)
+            >>> dev.set_timerange('10ms')
+            >>> dev.set_channel(CH1, range='20v', coupling=DC, offset=5/10, probe='x10')
+            >>> dev.set_channel(CH2, range='20v', coupling=DC, offset=1/10, probe='x10')
+            >>> dev.set_trigger(CH1, EDGE, RISE, level='2v', position=1/2, sweep=AUTO)
             >>>
-            >>> for frames in dev.pull_iter(freq='500ms', autosense=True, autorange=False):
+            >>> for frames in dev.fetch_iter(freq=3, autosense=True, autorange=False):
             >>>     print(frames)
             >>>     break
         """
-
-        freq = _parse.seconds(freq=freq)
-        freq = max(0, freq - 30e-3)
-
-        self._halt()
-
-        buffer = self._buffer
-        cmd_arg = bytes((0x04, 0x05)[on] for on in self.on)  # 4:OFF 5:ON
-        cmd_get = CMD.GET_DATA.pack(cmd_arg)
-        channels = [ i for i, on in enumerate(self.on) if on ]
-        frames = [ None ] * CHANNELS
-        again = False
-        starttime = None
-
-        if self.rollmode:
-            offset = READ_SIZE - SAMPLES - 3  # from right
-        else:
-            offset = (READ_SIZE - ADC_SIZE) + ((ADC_SIZE - SAMPLES) >> 1)  # from center
-
-        points = np.frombuffer(buffer, 'b', SAMPLES, offset=offset)
-
         with self._lock:
-            self._submit()
 
-        while again and not self._stop.is_set() or not self._stop.wait(freq):
+            if not any(self.on):
+                self.on[CH1] = True
+
+            buffer = self._buffer
+            delay  = _max(0, 1 / freq - 0.05) if freq else 0
+            start  = FRAME_SIZE - SAMPLES - (0 if self.rollmode else 50)  # right or center
+            points = np.frombuffer(buffer, 'b', SAMPLES, offset=start)
+            frames = [ None ] * CHANNELS
+            wait   = 0
+
+            # self._push(CMD.SET_CHL_ON, _bits(self.on)  # [ 0:off 1:on ]
+            # self._push(CMD.SET_RUNSTOP, 0)  # [ 0:run, 1:stop ]
+            if self._submit():
+                if self._stop.wait(0.2):
+                    return
+
+        while True:
             with self._lock:
-                again = False
 
-                if self.sweepmode:
-                    if not self._send(CMD.GET_DATAFINISHED, 0):
-                        continue
-                    if not self._send(CMD.GET_TRIGGERED, 0):
+                while True:
+                    if self._stop.wait(wait):
+                        return
+
+                    if self.sweepmode :  # ONCE or NORMAL
+                        if not self._send(CMD.GET_DATAFINISHED, 0) \
+                            or not self._send(CMD.GET_TRIGGERED, 0):
+                            wait = 0.06
+                            continue
+
+                    for chl, time_sum, period_num, cursor in self._pull_data(self.on, buffer):
+                        assert self.rollmode or cursor >= SAMPLES, "Bad cursor: %d" % cursor
+
+                        if autorange or autosense:
+                            pt_min = int(points.min())
+                            pt_max = int(points.max())
+                            if autorange:  # adjust volt range and volt offset
+                                self._adjust_range(chl, pt_min, pt_max)
+                            if autosense:  # adjust trigger level and frequency meter level
+                                self._adjust_sense(chl, pt_min, pt_max)
+
+                        cursor = SAMPLES - _clip(cursor, 0, SAMPLES)  # invert cursor from right to left
+                        offset = cursor - (SAMPLES * self.trigger_position)  # samples to trigger origin
+                        frequency = time_sum and period_num / time_sum * SAMPLING_RATES[-1]  # frequency meter
+                        frames[chl] = Frame(self, chl, buffer[start + cursor: start + SAMPLES], offset, frequency)
+
+                    if self._submit():  # if sent pending commands
+                        wait = 0.2
                         continue
 
+                    break
+
+            yield Frames(frames, self._clock)
+            wait = delay
+
+
+    def _pull_data(self, on, buffer):
+
+        # b0-7:CH1  b8-15:CH2  [ 0x04:OFF 0x05:ON ]
+        arg = int.from_bytes(on, 'little') & 0x0101 | 0x0404
+        wait = 0
+
+        if arg != 0x0404:  # if at least one channel is on
+
+            while True:
                 try:
-                    self._bulk_write(cmd_get)
-                    pulltime = self._writetime
+                    self._bulk_write(CMD.GET_DATA.pack(arg))
 
-                    for chl in channels:
-                        ret = self._bulk_read(buffer)
-                        CMD.GET_DATA.log(cmd_arg, ret)
-                        if ret != READ_SIZE:
-                            again = True
-                            break
+                    ret = self._bulk_read(buffer)
+                    CMD.GET_DATA.log(arg, ret, buffer)
+                    if ret == FRAME_SIZE:  # 5 (EBUSY) or 5211 (frame)
+                        yield CMD.BIIH.unpack_from(buffer)
 
-                        channel, time_sum, period_num, cursor = unpack_from("<BIIH", buffer)
-                        assert channel == chl, "Expected channel %d, got %s" % (chl, channel)
-                        assert self.rollmode or cursor >= SAMPLES, "Invalid cursor %d" % cursor
+                        if arg == 0x0505:
+                            ret = self._bulk_read(buffer)
+                            CMD.GET_DATA.log(arg, ret, buffer)
+                            assert ret == FRAME_SIZE
+                            yield CMD.BIIH.unpack_from(buffer)
 
-                        zero = round(ADC_RANGE * self.voltoffset[chl])
-                        vmin = min(zero, int(points.min()))
-                        vmax = max(zero, int(points.max()))
-
-                        if autorange:
-                            vb = VOLTRANGES.index(self.voltrange[chl])
-                            amp = abs(vmax - vmin)
-                            mid = (vmax + vmin) / 2
-
-                            if amp < 30 or vmax > 100 or vmin < -100:
-                                if vmax >= ADC_MAX or vmin <= ADC_MIN:
-                                    vbnew = (vb + len(VOLTRANGES)) >> 1
-                                else:
-                                    voltrange = amp * 1.3 * VOLTRANGES[vb] / ADC_RANGE
-                                    vbnew = bisect_left(VOLTRANGES, voltrange)
-                                    mid *= VOLTRANGES[vb] / VOLTRANGES[vbnew]
-
-                                if vb != vbnew or amp >= 30:
-                                    voltoffset = self.voltoffset[chl] - mid / ADC_RANGE
-                                    self.voltoffset[chl] = _clip(voltoffset, -0.4, 0.4)
-                                    self.voltrange[chl] = VOLTRANGES[vbnew]
-                                    self._push_channel(chl)
-                                    again = True
-                                    continue
-
-                        if autosense:
-                            mid = (vmin + vmax) >> 1
-                            self._push(CMD.SET_EDGE_LEVEL[chl], pack('bb', mid + 5, mid - 5))  # trigger sense level
-                            self._push(CMD.SET_FREQREF[chl], mid & 0xff)  # freq meter sense level
-
-                        # period = period_num and time_sum / period_num / SAMPLING_RATE
-                        frequency = time_sum and period_num / time_sum * SAMPLING_RATE
-                        start = max(0, min(SAMPLES, SAMPLES - cursor))
-                        translate = start - SAMPLES * self.trigger_position  # points to trigger origin
-                        data = buffer[offset: offset + SAMPLES]
-                        frames[chl] = Frame(self, channel, data, start, translate, frequency)
+                        return
+                    else:
+                        # wait 0ms if first attempt, 60ms otherwise
+                        if self._stop.wait(wait):
+                            return
+                        wait = 0.06
 
                 except USBError as ex:
-                    self._on_usb_err(ex, CMD.GET_DATA, cmd_arg)
-                    continue
-
-                self._submit()
-
-            if not again:
-                if starttime is None:
-                    starttime = pulltime
-                yield Frames(frames, pulltime - starttime)
+                    self._on_usb_err(ex)
 
 
-    def read_iter(self, freq):
-        """ Generator to retrieve consecutive samples.
-        Continuous sampling if freq < timerange (100Ks/s max).
+    def _adjust_range(self, chl, pt_min, pt_max):
+
+        vb = VOLT_RANGES.index(self.voltrange[chl])
+        offset = round(ADC_RANGE * self.voltoffset[chl])
+        lo = _min(offset, pt_min) if pt_min > ADC_MIN else (pt_min << 2) 
+        hi = _max(offset, pt_max) if pt_max < ADC_MAX else (pt_max << 2) 
+        amp = abs(hi - lo)
+
+        if amp < 30 or amp >= ADC_RANGE:
+            vr = amp * 1.2 * VOLT_RANGES[vb] / ADC_RANGE
+            vb_new = _find_ge(VOLT_RANGES, vr)  # volt range greater or equal
+
+            if vb != vb_new or amp >= 30:
+                scale = VOLT_RANGES[vb] / VOLT_RANGES[vb_new]
+                mid = (hi - offset + lo - offset) / 2 * _min(scale, 10)
+                self.voltoffset[chl] = _clip(-mid / ADC_RANGE, -0.4, 0.4)
+                self.voltrange[chl] = VOLT_RANGES[vb_new]
+                self._push_channel(chl)
+
+
+    def _adjust_sense(self, chl, pt_min, pt_max):
+
+        offset = round(ADC_RANGE * self.voltoffset[chl])
+        lo = _min(offset, pt_min)
+        hi = _max(offset, pt_max)
+        mid = _clip((lo + hi) >> 1, -100, 100)
+        self._push(CMD.SET_EDGE_LEVEL[chl], _u16(mid + 10, mid))  # trigger sense level
+        self._push(CMD.SET_FREQREF[chl], _u8(mid))  # freq meter sense level
+
+
+    def read(self, duration, pre=None):
+        """ To acquire continuous samples for a defined time from the start or on a trigger.
+        The maximum sampling rate is arround 100Kbs/s.
+        Raise an error if samples are missing.
 
         Args:
-            freq (float): Sleep time between readings.
+            duration (float): Time from start or post-trigger time if a trigger is set (second).
+            pre      (float): Optional pre-trigger time (second).
+        Returns:
+            `Frames`: (`Frame` `CH1`, `Frame` `CH2`)
+        Example:
+            Acquire continuous samples on a trigger:
+
+            >>> dev = VDS1022()
+            >>> dev.set_sampling('10k')  # 1K samples per seconds * 10 samples
+            >>> dev.set_channel(CH1, DC, range='10v', offset=2/10, probe='x10')
+            >>> dev.set_trigger(CH1, EDGE, FALL, level='2.5v')
+            >>> frames = dev.read('1s')
+            >>> frames
+        """
+        duration = _parse.seconds(duration=duration)
+        pre = _parse.seconds(pre=pre) if pre else 0
+
+        queue = collections.deque()
+        clock_start = None
+        clock_end = None
+
+        if self.sweepmode == ONCE:
+            for frames in self.read_iter():
+                queue.append(frames)
+                now = frames.clock
+
+                if clock_start is None:
+                    clock_start = now
+
+                if clock_end is None:
+                    with self._lock:
+                        if self._send(CMD.GET_TRIGGERED, 0):
+                            clock_end = now + duration
+
+                    while queue and now - queue[0].clock > pre:
+                        queue.popleft()
+
+                elif now > clock_end:
+                    return Frames.concat(queue)
+        else:
+            for frames in self.read_iter():
+                queue.append(frames)
+
+                if clock_end is None:
+                    clock_end = frames.clock + duration
+
+                if frames.clock > clock_end:
+                    return Frames.concat(queue)
+
+
+    def read_iter(self):
+        """ Generator to retrieve consecutive samples.
+
         Yields:
             `Frames`: (`Frame` `CH1`, `Frame` `CH2`)
         """
-
-        freq = _parse.seconds(freq=freq)
-
-        self._halt()
-        self.rollmode = True
-
-        # In roll mode, the signal is corrupted at the end with a sampling rate over 50Ks/s.
-        # To overcome this issue, the number of sample is reduced from 5000 to 4000.
-
-        continuous = freq < self.timerange
-        cmd_arg    = bytes((0x04, 0x05)[on] for on in self.on)
-        cmd_get    = CMD.GET_DATA.pack(cmd_arg)
-        channels   = tuple( i for i, on in enumerate(self.on) if on )
-        length     = 4000 if self.sampling_rate > 20e3 else SAMPLES
-        translate  = 0  # points to origin on the timeline
-        frames     = [ None ] * CHANNELS
-        cursors    = [ 0 ] * CHANNELS
-        sleeptime  = _clip(freq - 35e-3 * len(channels), 0, 1)
-        maxtime    = length / self.sampling_rate
-        starttime  = None
-        prevtime   = None
-        buffer     = self._buffer
-
         with self._lock:
-            self._push(CMD.SET_RUNSTOP, 0)  # [ 0:run 1:stop ]
+
+            self.rollmode = True
+
+            if not any(self.on):
+                self.on[CH1] = True  # turn on CH1 if all channels are off
+
+            buffer    = self._buffer
+            adc_size  = ADC_SIZE + 20  # cursor becomes circular with ADC_SIZE + 20
+            cmd_get   = CMD.GET_DATA.pack(int.from_bytes(self.on, 'little') & 0x0101 | 0x0404)
+            chl_cnt   = sum(1 for on in self.on if on)  # number of used channels
+            delay     = _clip(ADC_SIZE / self.sampling_rate / 4 - 0.035 * chl_cnt, 0, 1)
+            maxtime   = ADC_SIZE / self.sampling_rate
+            clock     = self._clock + 5  # init higher value
+            frames    = [ None ] * CHANNELS
+            cursors   = [ 20 ] * CHANNELS  # 20 to account for ADC_SIZE + 20
+            offset    = 0
+            size      = 0
+
+            self._push(CMD.SET_SUF_TRG, 0)  # post-trigger size
+            self._push(CMD.SET_PRE_TRG, adc_size)  # pre-trigger size
+            self._push(CMD.SET_DEEPMEMORY, adc_size)  # ADC size for 1 channel
             self._push(CMD.SET_ROLLMODE, 1)  # [ 0:off 1:on ]
-            self._push(CMD.SET_DEEPMEMORY, 5120)  # cursor becomes circular at 5120, was 5100
+            # self._push(CMD.SET_CHL_ON, _bits(self.on))  # [ 0:off 1:on ]
+            # self._push(CMD.SET_RUNSTOP, 0)  # [ 0:run, 1:stop ]
             self._submit()
 
-        while not self._stop.wait(sleeptime):
+            # wait 600ms for the trigger to clear itself
+            for _ in range(6):
+                if self._stop.wait(0.1):
+                    return
+                if not self._send(CMD.GET_TRIGGERED, 0):
+                    break
+
+        while True:
             with self._lock:
+                if self._stop.wait(delay):
+                    return
+
                 self._bulk_write(cmd_get)
-                pulltime = self._writetime
 
-                if starttime is None:
-                    starttime = prevtime = pulltime
-
-                if not continuous:
-                    translate = int((pulltime - starttime) * self.sampling_rate)
-
-                for chl in channels:
+                for _ in range(chl_cnt):
                     ret = self._bulk_read(buffer)
-                    assert ret == READ_SIZE
+                    assert ret == FRAME_SIZE, 'Bad frame size: %s' % ret
 
-                    channel, time_sum, period_num, cursor = unpack_from('<BIIH', buffer)
-                    assert channel == chl, "Unexpected channel in data"
+                    chl, _, _, cursor = CMD.BIIH.unpack_from(buffer)
+                    size = (cursor - cursors[chl] + adc_size) % adc_size  # count new samples
+                    assert size > 0, "Bad cursor %d: " % cursor
 
-                    if continuous:
-                        assert pulltime - prevtime < maxtime, "Missed some samples! Reduce the sampling rate"
-                        length = (cursor - cursors[chl] + 5120) % 5120
-                        assert length > 0, "Zero length ADC cursor"
-                        cursors[chl] = cursor
+                    cursors[chl] = cursor
+                    frames[chl] = Frame(self, chl, buffer[FRAME_SIZE - size: FRAME_SIZE], offset, None)
 
-                    buf = buffer[READ_SIZE - length: READ_SIZE]  # -3 to skip corrupted bytes at the end
-                    frames[chl] = Frame(self, chl, buf, 0, translate, 0)
+                assert self._clock - clock < maxtime, "Missed some samples! Reduce the sampling rate"
+                clock = self._clock
+                offset += size
 
-                prevtime = pulltime
-                translate += length
-                yield Frames(frames, pulltime - starttime)
+            yield Frames(frames, clock)
+
+
+    def autoset(self):
+        """ Adjust the range and timebase.
+
+        """
+        with self._lock:
+
+            points  = np.frombuffer(self._buffer, 'b', SAMPLES, FRAME_SIZE - SAMPLES - 50)
+            rate    = SAMPLING_RATES[-1]
+            tries   = 0
+            hits    = 0
+
+            self.on[:] = (True, ) * CHANNELS  # activate all channels
+            self.sweepmode = AUTO
+            self.trigger_position = 1/2
+
+            self._push_sampling(25000, False)  # 25K samples per second
+            self._push(CMD.SET_PEAKMODE, 1)  # [ 0:off  1:on ]
+            self._push(CMD.SET_MULTI, 0)  # [ 0:TrgOut  1:PassFail  2:TrgIn ]
+            self._push(CMD.SET_PRE_TRG, (ADC_SIZE >> 1) - HTP_ERR )  # htp at half
+            self._push(CMD.SET_SUF_TRG, (ADC_SIZE >> 1) + HTP_ERR )  # htp at half
+            self._push(CMD.SET_TRIGGER, 0xc000)  # Alternate CH1 and CH2
+
+            for chl in range(CHANNELS):
+                self.voltoffset[chl] = 0  # clear offset
+                self._push(CMD.SET_TRG_HOLDOFF[chl], 0x8002)  # 100ns
+                self._push(CMD.SET_EDGE_LEVEL[chl], _u16(20, 10))  # trigger level
+                self._push(CMD.SET_FREQREF[chl], _u8(12))  # freq meter
+                self._push_channel(chl)
+
+            # self._push(CMD.SET_CHL_ON, _bits(self.on))  # [ 0:off 1:on ]
+            # self._push(CMD.SET_RUNSTOP, 0)  # [ 0:run, 1:stop ]
+
+            while tries < 10 and hits < self.on.count(True):
+                tries += 1
+                self._submit()
+
+                if self._stop.wait(0.2):
+                    return
+
+                for chl, time_sum, period_num, cursor in self._pull_data(self.on, points.base):
+
+                    vb = VOLT_RANGES.index(self.voltrange[chl])
+                    pmin = pmax = round(ADC_RANGE * self.voltoffset[chl])
+                    pmax = _max(pmax, int(points.max()))
+                    pmin = _min(pmin, int(points.min()))
+                    amp = _max(abs(pmax), abs(pmin)) << 1
+
+                    if pmax >= ADC_MAX or pmin <= ADC_MIN:
+                        vb_new = (vb + len(VOLT_RANGES)) >> 1
+                    elif amp < 16:
+                        self.on[chl] = False
+                        continue
+                    else:
+                        vb_new = _find_ge(VOLT_RANGES, amp * 1.1 * VOLT_RANGES[vb] / ADC_RANGE)
+                        scale = VOLT_RANGES[vb] / VOLT_RANGES[vb_new]
+                        level = _clip(round((pmax + pmin) / 2 * scale), -100, 100)
+                        self._push(CMD.SET_EDGE_LEVEL[chl], _u16(level + 10, level))
+                        self._push(CMD.SET_FREQREF[chl], _u8(level))  # freq meter
+
+                    if DEBUG:
+                        print("CH%s  voltrange:%sv -> %sv  amplitude:%s" % (
+                            chl + 1, self.voltrange[chl], VOLT_RANGES[vb_new], amp))
+
+                    if vb_new == vb:
+                        hits += 1
+                    else:
+                        hits = 0
+                        self.voltrange[chl] = VOLT_RANGES[vb_new]
+                        self._push_channel(chl)
+
+                    if period_num > 1 and amp > 20:
+                        period = time_sum / period_num / SAMPLING_RATES[-1]
+                        rate_new = SAMPLING_RATES[_find_le(SAMPLING_RATES, SAMPLES / (period * 3))]
+                        if rate_new != self.sampling_rate and rate_new < rate:
+                            if DEBUG:
+                                print("CH%s  rate:%s -> %s  period:%s" % (
+                                    chl + 1, self.sampling_rate, rate_new, period))
+                            self._push_sampling(rate_new, False)
+                            rate = rate_new
+                            hits = 0
+
+            trg = self._send(CMD.GET_TRIGGERED, 0)
+            self._push(CMD.SET_TRIGGER, (0x0000, 0x2000)[trg == 2])  # CH1 or CH2
+            self._push(CMD.SET_PEAKMODE, 0)
+
+            return self
 
 
     def calibrate(self):
@@ -2114,213 +2296,100 @@ class VDS1022:
         The calibration is then saved to 'VDS1022xxxxxxxx-cals.json'.
         Probes must be disconnected.
         """
-
-        sampling_rate = 200e3
-        timerange = ADC_SIZE / sampling_rate
-        calibration = deepcopy(self.calibration)
-
-        self._halt()
-
         with self._lock:
-            self._push(CMD.SET_PEAKMODE, 0)  # [ 0:off  1:on ]
-            self._push(CMD.SET_MULTI, MULTI_IN)  # [ 0:TrgOut  1:PassFail  2:TrgIn ]
-            self._push(CMD.SET_TRIGGER, 1)  # External TTL EDGE Rise
-            self._push(CMD.SET_TIMEBASE, round(SAMPLING_RATE / sampling_rate))
-            self._push(CMD.SET_EMPTY, 1)
-            self._push(CMD.SET_RUNSTOP, 0)  # [ 0:run 1:stop ]
-            self._submit()
 
-            for vb in reversed(range(len(VOLTRANGES))):
-                for chl in range(CHANNELS):
-                    calibration[COMP][chl][vb] = _clip(calibration[COMP][chl][vb], 500 , 600)
-                    if not self._calibrate(calibration, timerange, chl, COMP, vb, 0, 0):
-                        return
+            self._initialize()
 
-                for chl in range(CHANNELS):
-                    calibration[AMPL][chl][vb] = _clip(calibration[AMPL][chl][vb], 100 , 200)
-                    if not self._calibrate(calibration, timerange, chl, AMPL, vb, 110, 110):
-                        return
+            calibration = deepcopy(self.calibration)
+            points = np.frombuffer(self._buffer, 'b', SAMPLES, FRAME_SIZE - SAMPLES - 50)
 
-        self.calibration = calibration
-        _print_calibration(calibration)
+            for cals in calibration[COMP]:
+                cals[:] = ( _clip(x, 500 , 600) for x in cals )  # clip zero-compensation
 
-        self._push(CMD.SET_TRIGGER, 0)
-        self._push(CMD.SET_MULTI, MULTI_OUT)  # [ 0:TrgOut  1:PassFail  2:TrgIn ]
-        self._push_timerange(self.timerange, self.rollmode)
-        for chl in range(CHANNELS):
-            self._push_channel(chl)
+            for cals in calibration[AMPL]:
+                cals[:] = ( _clip(x, 100 , 200) for x in cals )  # clip zero-amplitude
 
-        self._save_calibration()
+            for vb in reversed(range(len(VOLT_RANGES))):
+                if not self._calibrate(points, calibration, COMP, vb, 0, 0):
+                    return False
+
+            for vb in range(len(VOLT_RANGES)):
+                if not self._calibrate(points, calibration, AMPL, vb, -110, -110):
+                    return False
+
+            self.calibration = calibration
+            self._save_calibration()
+            self._initialize()
+
+            print('Saved calibration to\n' + self.calibration_path)
 
 
-    def _calibrate(self, calibration, timerange, chl, ical, vb, pos0, target):
-
-        coupling = DC if ical == GAIN else AC
-        attenuate = VOLTRANGES[vb] >= ATTENUATION_THRESHOLD
-        chl_arg = (attenuate & 1) << 1 | (coupling & 3) << 5 | 1 << 7
-        self._send(CMD.SET_CHANNEL[chl], chl_arg)
+    def _calibrate(self, points, calibration, ical, vb, pos0, target):
 
         name = ('Gain', 'Ampl', 'Comp')[ical]
-        cmd_arg = bytes((0x04, 0x05)[i == chl] for i in range(CHANNELS))  # 4:OFF 5:ON
-        cmd_get = CMD.GET_DATA.pack(cmd_arg)
-        buffer = self._buffer
-        points = np.frombuffer(buffer, 'b', SAMPLES, offset=111+50)
-        cal = cal_prev = calibration[ical][chl][vb]
-        steps = 100
-        scale = 1
-        hits = 0
-        err = 0
+        states = tuple([ 0 ] * 4 for _ in range(CHANNELS))  # hits, steps, cal_prev, err_prev
+        on = [ True ] * CHANNELS
+
+        for chl in range(CHANNELS):
+            coupling  = DC if ical == GAIN else AC
+            attenuate = vb >= ATTENUATION_THRESHOLD
+            chl_arg   = (attenuate & 1) << 1 | (coupling & 3) << 5 | 1 << 7
+            self._push(CMD.SET_CHANNEL[chl], chl_arg)
 
         for i in range(10):
-
-            if not i or ical == GAIN:
-                cal_gain = calibration[GAIN][chl][vb]
-                self._send(CMD.SET_VOLT_GAIN[chl], cal_gain)
-
-            if not i or ical != GAIN:
-                cal_comp = calibration[COMP][chl][vb]
+            for chl in range(CHANNELS):
                 cal_ampl = calibration[AMPL][chl][vb]
+                cal_comp = calibration[COMP][chl][vb]
+                cal_gain = calibration[GAIN][chl][vb]
                 zero_off = round(cal_comp - pos0 * cal_ampl / 100)
-                self._send(CMD.SET_ZERO_OFF[chl], zero_off)
+                self._push(CMD.SET_ZERO_OFF[chl], zero_off)
+                self._push(CMD.SET_VOLT_GAIN[chl], cal_gain)
 
-            if self._stop.wait(timerange):
-                return False
-
-            while True:
-                try:
-                    self._bulk_write(cmd_get)
-                    ret = self._bulk_read(buffer)
-                    CMD.GET_DATA.log(cmd_arg, ret)
-                    if ret == READ_SIZE:
-                        break
-                except USBError as ex:
-                    self._on_usb_err(ex, CMD.GET_DATA, cmd_arg)
-
-            err_prev = err
-            err = float(np.mean(points)) - target
-            diff = err_prev and abs(err_prev - err)
-            hits += steps == 1 and abs(err) < 2
-
-            if diff > 2:
-                scale = steps / diff
-
-            if DEBUG:
-                print("CH%s %s err:%.2f cal:%s steps:%s scale:%.2f" % (
-                        chl + 1, name, err, cal, steps, scale))
-
-            if hits > 2:
-                calibration[ical][chl][vb] = max(cal, cal_prev)
-                print("CH%d %s %sV: %s" % (chl + 1, name, VOLTRANGES[vb], cal))
-                return True
-
-            cal_prev = cal
-            steps = _clip(round(abs(err) * scale), 1, steps - 1)
-            cal += int(copysign(steps, (err if target <= 0 else -err)))
-            calibration[ical][chl][vb] = cal
-
-        raise RuntimeError("Failed to calibrate CH%d" % (chl + 1))
-
-
-    def autoset(self):
-        """ Adjust the range and timebase of each enabled channel. """
-
-        self._halt()
-
-        with self._lock:
-            self._push(CMD.SET_ROLLMODE, 0)
-            self._push(CMD.SET_PEAKMODE, 1)  # [ 0:off  1:on ]
-            self._push(CMD.SET_MULTI, MULTI_OUT)  # [ 0:TrgOut  1:PassFail  2:TrgIn ]
-            self._push(CMD.SET_PRE_TRG, (ADC_SIZE >> 1) - HTP_ERR )  # htp at 0 (half)
-            self._push(CMD.SET_SUF_TRG, (ADC_SIZE >> 1) + HTP_ERR )  # htp at 0 (half)
-            self._push(CMD.SET_TRIGGER, 0xc000)  # Alt mode
-            self._push(CMD.SET_RUNSTOP, 0)  # [ 0:run 1:stop ]
-            self._push_timerange(0.2, rollmode=False)
-
-            for chl, on in enumerate(self.on):
-                if on and not self._autoset(chl):
-                    break
-
-            self._push(CMD.SET_PEAKMODE, 0)
-
-
-    def _autoset(self, chl):
-
-        cmd_arg = bytes((0x04, 0x05)[i == chl] for i in range(CHANNELS))  # [ 4:OFF 5:ON ]
-        cmd_get = CMD.GET_DATA.pack(cmd_arg)
-        buffer = self._buffer
-        points = np.frombuffer(buffer, 'b', SAMPLES, 111 + 50)
-        vb = VOLTRANGES.index(self.voltrange[chl])
-        vb_pre = vb
-        level = 25
-        tries = 0
-        hits = 0
-
-        while tries < 10 and hits < 3:
-            tries += 1
-            print("Adjust CH%s try:%s hits:%s voltrange:%sv timerange:%ss" % (
-                    chl + 1, tries, hits, VOLTRANGES[vb], self.timerange))
-
-            self.coupling[chl] = DC
-            self.voltoffset[chl] = 0
-            self.voltrange[chl] = VOLTRANGES[vb]
-
-            self._push_channel(chl)
-            self._push(CMD.SET_EDGE_LEVEL[chl], pack('bb', level + 5, level - 5))
-            self._push(CMD.SET_FREQREF[chl], pack('b', level))
-            self._push(CMD.SET_EMPTY, 1)
             self._submit()
 
-            if self._stop.wait(self.timerange):
+            if self._stop.wait(0.25):
                 return False
 
-            while True:
-                try:
-                    self._bulk_write(cmd_get)
-                    ret = self._bulk_read(buffer)
-                    if ret == READ_SIZE:
-                        break
-                except USBError as ex:
-                    self._on_usb_err(ex, CMD.GET_DATA, cmd_arg)
+            for chl, _, _, _ in self._pull_data(on, points.base):
+                hits, steps, cal_prev, err_prev = states[chl]
 
-            channel, time_sum, period_num, cursor = unpack_from("<BIIH", buffer)
-            assert channel == chl, "Invalid channel %d" % channel
+                cal   = calibration[ical][chl][vb]
+                err   = float(np.mean(points)) - target
+                hits  = hits + 1 if steps == 1 and abs(err) < 2 else 0
+                scale = steps / _max(0.5, abs(err_prev - err)) if steps else 1
 
-            zero = round(ADC_RANGE * self.voltoffset[chl])
-            vmax = max(zero, int(points.max()))
-            vmin = min(zero, int(points.min()))
-            amp = max(abs(vmax), abs(vmin)) << 1
-            vb_pre = vb
+                # print("CH%s %s %4sv  err:%+6.2f  cal:%4s  steps:%3s  scale:%3.1f" % (
+                #         chl + 1, name, VOLT_RANGES[vb], err, cal, steps, scale))
 
-            if vmax >= ADC_MAX or vmin <= ADC_MIN:
-                vb = (vb + len(VOLTRANGES)) >> 1
-            else:
-                voltrange = amp * 1.05 * VOLTRANGES[vb] / ADC_RANGE
-                vb = bisect_left(VOLTRANGES, voltrange)
-                scale = VOLTRANGES[vb_pre] / VOLTRANGES[vb]
-                level = round((vmax + vmin) / 2 * scale)
+                if hits < 3:
+                    ceiling = steps - 1 if steps and abs(err) < 10 else 100
+                    steps = _max(1, _min(ceiling, ceil(abs(err) * scale)))
+                    correction = round(copysign(steps, err if target <= 0 else -err))
+                    calibration[ical][chl][vb] = cal + correction
+                    states[chl][:] = hits, steps, cal, err
+                else:
+                    on[chl] = False  # to skip data of this channel
+                    if abs(err_prev) < abs(err):
+                        calibration[ical][chl][vb] = cal_prev
+                    print("%s %4sv CH%d : %s -> %s" % (name, VOLT_RANGES[vb], chl + 1,
+                            self.calibration[ical][chl][vb], calibration[ical][chl][vb]))
 
-            if DEBUG:
-                sy = self.voltrange[chl] / ADC_RANGE
-                print("CH%s voltrange:%sv  next:%sv  min:%sv  max:%sv" % (
-                        chl + 1,
-                        self.voltrange[chl],
-                        VOLTRANGES[vb],
-                        vmin * sy,
-                        vmax * sy))
+            if not any(on):
+                return True
 
-            if period_num:
-                period = time_sum / period_num / SAMPLING_RATE
-                timerange = TIMERANGES[bisect_left(TIMERANGES, period * 3.5)]
-                if timerange != self.timerange:
-                    self._push_timerange(timerange, False)
-                    if DEBUG:
-                        print("CH%s  timerange:%ss  next:%ss  period:%ss" % (
-                                chl + 1, self.timerange, timerange, period))
-                    continue
+        raise Exception("Failed to calibrate CH%d %s" % (chl + 1, name))
 
-            hits += vb == vb_pre
 
-        return True
+    def print_calibration(self):
+        """ Prints the current calibration (gain, zero-amplitude, zero-compensation).
+        """
+        values = ' '.join(format(x / 10, '5') for x in VOLT_RANGES)
+        print('# VOLTBASE: ' + values)
+
+        for i, name in enumerate(('GAIN', 'AMPL', 'COMP')):
+            for chl in range(CHANNELS):
+                values = ' '.join(format(x, '5') for x in self.calibration[i][chl])
+                print('# %s CH%s: %s' % (name, chl + 1, values))
 
 
 # def _signal_handler(signal, frame):
@@ -2338,9 +2407,9 @@ if __name__ == '__main__':
     with VDS1022(debug=False) as dev:
         dev.calibrate()
 
-        dev.set_timerange('20ms', rollmode=False)
-        dev.set_channel(CH1, range='10v', coupling='DC', offset=-0.4, probe='x10')
+        dev.set_timerange('20ms')
+        dev.set_channel(CH1, range='10v', coupling='DC', offset=1/10, probe='x10')
 
-        for frames in dev.pull_iter(autorange=False):
+        for frames in dev.fetch_iter(autorange=False):
             print('Vrms:%s' % frames.ch1.rms(), end='\r')
             time.sleep(1)

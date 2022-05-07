@@ -107,12 +107,11 @@ Simple measure :
 ```python
 from vds1022 import *
 
-dev = VDS1022()
-dev.set_timerange('20ms')
-dev.set_channel(CH1, range='50v', coupling='DC', offset='0v', probe='x10')
+dev = VDS1022(debug=0)
+dev.set_channel(CH1, range='10v', offset=1/10, probe='x10')
 
-for ch1, ch2 in dev.pull_iter(freq=1, autorange=True) :
-    print('Vrms:%s' % ch1.rms())
+for frames in dev.fetch_iter(freq=2) :
+    print('Vrms:%s     ' % frames.ch1.rms(), end='\r')
 ```
 
 Plotting in a Jupyter notebook:
@@ -120,12 +119,12 @@ Plotting in a Jupyter notebook:
 ```python
 from vds1022 import *
 
-dev = VDS1022(debug=False)
-dev.set_timerange('5ms')
-dev.set_channel(CH1, range='10v', coupling=DC, offset=0, probe='x10')
-dev.set_channel(CH2, range='10v', coupling=DC, offset=0, probe='x10')
-dev.set_trigger(CH1, EDGE, RISE, position=0.5, level='0v', sweep=ONCE)
-frames = dev.pull()
+dev = VDS1022()
+dev.set_sampling('100k')
+dev.set_channel(CH1, range='20v', coupling=DC, offset=5/10, probe='x10')
+dev.set_channel(CH2, range='20v', coupling=DC, offset=1/10, probe='x10')
+dev.set_trigger(CH1, EDGE, RISE, position=1/2, level='2v')
+frames = dev.fetch()
 frames.plot()
 ```
 
