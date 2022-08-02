@@ -52,8 +52,7 @@ class BokehChart:
         else:
             lines = data  # array of dict
 
-        labels = opts.pop('label', [ line['name'] for line in lines ])
-        self.labels = labels
+        labels = opts.pop('label', [ d.get('name', str(i)) for i, d in enumerate(lines) ])
 
         opts.setdefault('frame_width', opts.pop('width', 600))
         opts.setdefault('frame_height', opts.pop('height', 250))
@@ -131,6 +130,8 @@ class BokehChart:
 
         self.figure = p
         self.handle = None
+        self.labels = labels
+        self.data_source = ds
         self.rollover = rollover
 
 
@@ -154,8 +155,6 @@ class BokehChart:
         import bokeh.io
 
         source_cls = type(source)
-        data_source = self.figure.renderers[0].data_source
-
 
         if source_cls is tuple:
             data = { (self.labels[i - 1] if i else 'x'): _items(item) 
@@ -181,9 +180,9 @@ class BokehChart:
             raise ValueError("Invalid argument source")
 
         if 0 < len(data['x']) < 10:
-            data_source.stream(data, self.rollover)
+            self.data_source.stream(data, self.rollover)
         else:
-            data_source.data = data
+            self.data_source.data = data
 
         # TODO: rollover range
         # if self.rollover is not None and len(ds.data['x']) >= self.rollover:
@@ -237,15 +236,13 @@ class MatplotlibChart:
         def format_time(x, pos):
             n = 0
             while x and abs(x) < 0.5:
-                x *= 1e3
-                n += 1
+                n, x = n + 1, x * 1e3
             return '{0:g}{1}s'.format(round(x, 4), ' mµnp'[n][:n]) if x else '0'
 
         def format_volt(x, pos):
             n = 0
             while x and abs(x) < 0.5:
-                x *= 1e3
-                n += 1
+                n, x = n + 1, x * 1e3
             return '{0:g}{1}v'.format(round(x, 4), ' mµnp'[n][:n]) if x else '0'
 
         dpi = plt.rcParams['figure.dpi']

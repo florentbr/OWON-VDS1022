@@ -1,4 +1,10 @@
 
+2022/08/02 (1.1.3-cf18)
+* added XY mode auto turn-on when switched to 3 view mode (#55)
+* added shortcut (V) to switch to next view
+* fixed FFT scaling when switched to full FFT view
+* python API: improved logging, FFT and a few fixes
+
 2022/07/24 (1.1.3-cf17)
 * added full screen for XY mode (#53)
 * python API: fixed USB failures with new boards (#54)
