@@ -12,30 +12,39 @@ __all__ = (
     'MatplotlibChart'
 )
 
-_items = lambda x: x if hasattr(x, '__getitem__') else [ x ]
+_items = lambda x: x if hasattr(x, '__len__') else [ x ]
 
 
 class BokehChart:
 
-    _FORMATTER_X =\
-        "var v=tick, n=-1;"\
-        "if (v>=60) return ((v/60)|0)+':'+(+(100+v%60).toFixed(2)+'').substring(1);"\
-        "for (; v && Math.abs(v)<0.5; ++n) v*=1e3;"\
-        "return v && +v.toPrecision(5)+('mµnp'[n]||'')+'s';"
-
-    _FORMATTER_Y =\
-        "var v=tick, n=-1;"\
-        "for (; v && Math.abs(v)<0.5; ++n) v*=1e3;"\
-        "return v && +v.toPrecision(5)+('mµnp'[n]||'')+'v';"
-
+    _FORMATTERS = {
+        'clock':\
+            "var v=tick, n=-1;"\
+            "if (v>=60) return ((v/60)|0)+':'+(+(100+v%60).toFixed(2)+'').substring(1);"\
+            "for (; v && Math.abs(v)<0.5; ++n) v*=1e3;"\
+            "return v && +v.toPrecision(5)+('mµnp'[n]||'');",
+        'metric':\
+            "var v=tick, n=0;"\
+            "for (; v && Math.abs(v)>=1e3; n++) v/=1e3;"\
+            "for (; v && Math.abs(v)<0.5; n--) v*=1e3;"\
+            "return +v.toPrecision(5) + (n ? 'pnµm_kMG'[n+4] : '');",
+    }
 
     def __init__(self, data, opts, rollover=None):
         import bokeh.io, bokeh.plotting, bokeh.models, bokeh.models.tools
 
         self.xy_mode = opts.pop('xy_mode', False)
+        xscale = opts.pop('xscale', 'clock')
+        yscale = opts.pop('yscale', 'metric')
+
+        if xscale not in self._FORMATTERS:
+            opts.setdefault('x_axis_type', xscale)
+        if yscale not in self._FORMATTERS:
+            opts.setdefault('y_axis_type', yscale)
 
         if type(data).__name__ == 'Frames':
             if self.xy_mode:
+                xscale = yscale
                 opts.setdefault('tools', 'pan,wheel_zoom,zoom_in,zoom_out,box_zoom,save,reset')
                 opts.setdefault('active_multi', 'box_zoom')
                 opts.setdefault('width', 250)
@@ -59,7 +68,7 @@ class BokehChart:
         opts.setdefault('lod_interval', 0)
         opts.setdefault('x_axis_label', opts.pop('xlabel', None))
         opts.setdefault('y_axis_label', opts.pop('ylabel', None))
-        opts.setdefault('color', ('#1f77b4', '#ff7f0e'))
+        opts.setdefault('color', ('#1f77b4', '#ff7f0e', '#ff0e7f'))
         opts.setdefault('active_inspect', None)
         opts.setdefault('active_drag', None)
         opts.setdefault('active_multi', 'xbox_zoom')
@@ -85,7 +94,7 @@ class BokehChart:
             ys = _items(line['y'])
             xlim = line.get('xlim')
             ylim = line.get('ylim')
-            ds.data['x'] = xs
+            ds.data['x'] = xs 
             ds.data[labels[i]] = ys
 
             if not xlim:
@@ -103,15 +112,26 @@ class BokehChart:
             y_range.renderers += (pl,)
 
         for ax in p.xaxis:
-            ax.minor_tick_line_color = None
             ax.ticker.desired_num_ticks = 10
-            code = (self._FORMATTER_X, self._FORMATTER_Y)[self.xy_mode]
-            ax.formatter = bokeh.models.FuncTickFormatter(code=code)
+            formatter = self._FORMATTERS.get(xscale)
+            if formatter:
+                ax.minor_tick_line_color = None
+                ax.formatter = bokeh.models.FuncTickFormatter(code=formatter)
 
         for ax in p.yaxis:
-            ax.minor_tick_line_color = None
             ax.ticker.desired_num_ticks = 10
-            ax.formatter = bokeh.models.FuncTickFormatter(code=self._FORMATTER_Y)
+            formatter = self._FORMATTERS.get(yscale)
+            if formatter:
+                ax.minor_tick_line_color = None
+                ax.formatter = bokeh.models.FuncTickFormatter(code=formatter)
+
+        # if yscale == 'log':
+        #     p.ygrid.minor_grid_line_color = 'gray'
+        #     p.ygrid.minor_grid_line_alpha = 0.1
+
+        # if xscale == 'log':
+        #     p.xgrid.minor_grid_line_color = 'gray'
+        #     p.xgrid.minor_grid_line_alpha = 0.1
 
         lg = p.legend[0]
         lg.location = 'left'
@@ -159,6 +179,12 @@ class BokehChart:
         if source_cls is tuple:
             data = { (self.labels[i - 1] if i else 'x'): _items(item) 
                      for i, item in enumerate(source) }
+
+        elif source_cls is list:
+            data = { }
+            for i, frame in enumerate(source):
+                data['x'] = _items(frame['x'])
+                data[frame['name']] = _items(frame['y'])
 
         elif source_cls is dict:
             data = source
@@ -233,17 +259,19 @@ class MatplotlibChart:
         axe_opts = [ { k:v[i] for k,v in opts.items() if k not in fig_opts }
                      for i in range(len(lines)) ]
 
-        def format_time(x, pos):
+        def format_clock(x, pos):
             n = 0
             while x and abs(x) < 0.5:
                 n, x = n + 1, x * 1e3
-            return '{0:g}{1}s'.format(round(x, 4), ' mµnp'[n][:n]) if x else '0'
+            return format(x, 'g') + (' mµnp'[n] if n else '')
 
-        def format_volt(x, pos):
+        def format_metric(x, pos):
             n = 0
+            while x and abs(x) >= 1e3:
+                n, x = n - 1, x / 1e3
             while x and abs(x) < 0.5:
                 n, x = n + 1, x * 1e3
-            return '{0:g}{1}v'.format(round(x, 4), ' mµnp'[n][:n]) if x else '0'
+            return format(x, 'g') + (' mµnp GMk'[n] if n else '')
 
         dpi = plt.rcParams['figure.dpi']
         fig = plt.figure(figsize=(width / dpi, height / dpi), **fig_opts)
@@ -270,9 +298,9 @@ class MatplotlibChart:
                 ax.set_ylim(*ylim)
 
             ax.xaxis.set_major_locator(plt.MaxNLocator(10))
-            ax.xaxis.set_major_formatter((format_time, format_volt)[xy_mode])
+            ax.xaxis.set_major_formatter((format_clock, format_metric)[xy_mode])
             ax.yaxis.set_major_locator(plt.MaxNLocator(10))
-            ax.yaxis.set_major_formatter(format_volt)
+            ax.yaxis.set_major_formatter(format_metric)
             # ax.minorticks_on()
             ax.plot(xs, ys, **axe_opts[i])
 

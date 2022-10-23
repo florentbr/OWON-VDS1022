@@ -23,7 +23,7 @@ for file in glob.glob(src):
 
 setup(
     name='vds1022',
-    version='1.1.3',
+    version='1.1.5',
     description='API for the OWON VDS1022 oscilloscope',
     author='florent',
     author_email='florentbr@gmail.com',

@@ -70,8 +70,8 @@ MULTI_OUT = 0  # Multi channel mode - trigger out
 MULTI_PF  = 1   # Multi channel mode - pass/fail out
 MULTI_IN  = 2   # Multi channel mode - trigger in
 
-AC  = 0   #: Coupling - Alternating Current
-DC  = 1   #: Coupling - Direct Current
+AC  = 0  #: Coupling - Alternating Current
+DC  = 1  #: Coupling - Direct Current
 GND = 2  #: Coupling - Ground
 
 VOLT_RANGES = (
@@ -118,7 +118,7 @@ SAMPLES    = 5000  # number of pertinent samples in a frame
 GAIN = 0  # Gain (correction applyed for a measured signal)
 AMPL = 1  # Zero amplitude (correction applied for a 0v signal with no voltage offset)
 COMP = 2  # Zero compensation (correction applied for a 0v signal with an offset voltage)
-HTP_ERR = 10  # Horizontal trigger position correction
+HTP_ERR = 11  # Horizontal trigger position correction
 
 # USB
 USB_VENDOR_ID  = 0x5345
@@ -202,8 +202,8 @@ class CMD:
             if DEBUG:
                 if ret == 5:
                     # 5 bytes response : status (1 char), value (u32 or 4 [A-Z] chars)
-                    spec = "<c4s" if all(65 <= c <= 90 for c in buffer[1:5]) else "<cI"
-                    status, value = struct.unpack_from(spec, buffer[:5])
+                    spec = '<c4s' if all(65 <= c <= 90 for c in buffer[1:5]) else '<cI'
+                    status, value = struct.unpack_from(spec, buffer)
                     _log("[ %s %s ] %s %s", self.name, hex(arg), status, value)
                 else:
                     # 5211 bytes response
@@ -307,6 +307,8 @@ _max = lambda a, b: b if b > a else a
 
 _clip = lambda x, lo, hi: lo if x < lo else hi if x > hi else x
 
+_rms = lambda y: sqrt(np.square(y, dtype=np.float32).mean())
+
 _find_ge = lambda arr, x: bisect.bisect_left(arr, x)
 
 _find_le = lambda arr, x: bisect.bisect_right(arr, x) - 1
@@ -329,7 +331,7 @@ _to_precision = lambda x, n: round(x, -int(floor(log10(abs(x or 1)))) + (n - 1))
 
 
 def _iexp10(value, limit):
-    # To unsigned integer mantissa and base-10 exponent.
+    """ To unsigned integer mantissa and base-10 exponent.  """
     m, e = value, 0
     while m > limit:
         m, e = m / 10, e + 1
@@ -349,6 +351,18 @@ def _rfft(data, window, size):
         scale /= win.mean()
 
     return np.fft.rfft(data), scale
+
+
+def _quad_iterp(yy, i):
+    """ Quadratic interpolation of 3 adjacent points
+    https://www.dsprelated.com/freebooks/sasp/Quadratic_Interpolation_Spectral_Peaks.html
+    """
+    yi = yy[i]
+    yp = yy[i - 1] if i > 0 else yy[i + 1]
+    yn = yy[i + 1] if i + 1 < len(yy) else yy[i - 1]
+    x  = i + 0.5 * (yp - yn) / (yp - 2 * yi + yn)
+    y  = yi - 0.25 * (yp - yn) * (x - i)
+    return x, y
 
 
 def _printf(spec, *args):
@@ -431,8 +445,12 @@ class Frame:
 
     @property
     def _points(self):
-        return np.frombuffer(self.buffer, np.int8)
-        # return np.array(self.buffer, copy=False)
+        buf = self.buffer
+        if isinstance(buf, array) and buf.itemsize == 1:
+            buf = np.frombuffer(buf, np.int8)
+            buf.clip(ADC_MIN, ADC_MAX, out=buf)
+            self.buffer = buf
+        return buf
 
 
     @property
@@ -457,11 +475,12 @@ class Frame:
     @property
     def xlim(self):
         """ tuple: (Left limit, Right limit) . """
+        n = len(self.buffer)
         x1 = self.tx
-        x2 = self.tx + self.sx * len(self.buffer)
+        x2 = self.tx + self.sx * n
 
-        if len(self.buffer) < SAMPLES and abs(x2) < 1e-08:  # if roll mode and origine on the right
-            x1 -= self.sx * SAMPLES - len(self.buffer)  # pad left
+        if n < SAMPLES and abs(x2) < 1e-08:  # if roll mode and origine on the right
+            x1 -= self.sx * (SAMPLES - n)  # pad left
 
         return x1, x2
 
@@ -489,7 +508,7 @@ class Frame:
 
     def __getitem__(self, index):
         """ Returns the y value at index."""
-        return (self.buffer[index] * self.sy) + self.ty
+        return self.buffer[index] * self.sy + self.ty
 
 
     def x(self):
@@ -512,19 +531,17 @@ class Frame:
         Returns:
             numpy.ndarray: 1D Numpy array of y values in volt.
         """
-        ys = self._points.clip(ADC_MIN, ADC_MAX) * np.float32(self.sy)
-        if abs(self.ty) > 1e-3:
-            ys += np.float32(self.ty)
+        ys = self._points * np.float32(self.sy) + np.float32(self.ty)
         return ys
 
 
-    def is_clipped(self):
+    def clipped(self):
         """
         Returns:
             bool: True if the signal is clipped, False otherwise.
         """
-        ys = self._points
-        return bool(ys.max() > 125) or bool(ys.min() < -125)
+        pts = self._points
+        return pts.itemsize == 1 and int(pts.max()) >= ADC_MAX or int(pts.min()) <= ADC_MIN
 
 
     def xy(self):
@@ -532,7 +549,7 @@ class Frame:
         Returns:
             tuple: Two 1D Numpy arrays of x and y values in second and volt ( xs, ys ) .
         """
-        return ( self.x(), self.y() )
+        return self.x(), self.y()
 
 
     def percentile(self, *q):
@@ -543,7 +560,7 @@ class Frame:
             tuple: Voltage for each given percentile.
         """
         values = np.percentile(self._points, q)
-        return tuple(float(v.clip(ADC_MIN, ADC_MAX)) * self.sy + self.ty for v in values)
+        return tuple(float(v) * self.sy + self.ty for v in values)
 
 
     def median(self):
@@ -551,7 +568,7 @@ class Frame:
         Returns:
             float: Median voltage.
         """
-        v = float(np.median(self._points).clip(ADC_MIN, ADC_MAX))
+        v = float(np.median(self._points))
         return round(v * self.sy + self.ty, 3)
 
 
@@ -560,7 +577,7 @@ class Frame:
         Returns:
             float: Minimum voltage.
         """
-        v = float(self._points.min().clip(ADC_MIN, ADC_MAX))
+        v = float(self._points.min())
         return round(v * self.sy + self.ty, 3)
 
 
@@ -569,7 +586,7 @@ class Frame:
         Returns:
             float: Maximum voltage.
         """
-        v = float(self._points.max().clip(ADC_MIN, ADC_MAX))
+        v = float(self._points.max())
         return round(v * self.sy + self.ty, 3)
 
 
@@ -578,7 +595,7 @@ class Frame:
         Returns:
             float: Average voltage.
         """
-        v = float(self._points.mean().clip(ADC_MIN, ADC_MAX))
+        v = float(self._points.mean())
         return round(v * self.sy + self.ty, 3)
 
 
@@ -587,10 +604,8 @@ class Frame:
         Returns:
             float: RMS voltage.
         """
-        ys = self._points
-        if abs(self.ty) > 1e-3:
-            ys = ys + np.float32(self.ty / self.sy)
-        return round(sqrt(np.square(ys, dtype=np.float32).mean()) * self.sy, 3)
+        yy = self._points + np.float32(self.ty / self.sy)
+        return round(_rms(yy) * self.sy, 3)
 
 
     def std(self):
@@ -598,18 +613,36 @@ class Frame:
         Returns:
             float: Standard deviation.
         """
-        ys = self._points
-        if abs(self.ty) > 1e-3:
-            ys = ys + np.float32(self.ty / self.sy)
+        ys = self._points + np.float32(self.ty / self.sy)
         return round(ys.std() * self.sy, 3)
 
 
-    def freq(self):
-        """ Frequency of this signal.
-        Returns:
-            float: Frequency.
+    def freq(self, period=360, start=-1/2):
+        """ Main frequency and Phase. Phase is relative to center of frame.
+
+        Args:
+            period (float): Optional range over which the phase wraps (360, 2*pi).
+            start   (bool): Optional phase start ratio. Defaults to -1/2.
+        Returns:`
+            tuple: Frequency, Phase within [ start*period, (start+1)*period ]
         """
-        return self.frequency
+
+        ys = self._points
+        ys = ys - np.float32(ys.mean())  # remove DC component
+
+        if ys.max() > 15:
+            ii = np.nonzero((ys[1:] >= 0) & (ys[:-1] < 0))[0]  # indexes of positive crossings
+
+            if ii.size > 1:
+                size  = np.diff(ii).max() * 0.8                               # threshold period size
+                ii    = ii[np.nonzero(np.diff(ii, prepend=-size) > size)[0]]  # filter crossings
+                size  = np.mean(np.diff(ii))                                  # average period size     
+                freq  = 1 / (size * self.sx)                                  # frequency
+                ratio = np.mean((1 + len(ys)/2 + ii) % size) / size           # phase ratio of period
+                phase = (ratio - start + 1) % 1.0 + start                     # wrap [-0.5, +0.5]
+                return freq, -phase * period + 0
+
+        return None, None
 
 
     def _get_levels(self):
@@ -627,18 +660,19 @@ class Frame:
             tuple: Vbase, Vtop.
         """
         lo, hi = self._get_levels()
-        lower = _clip(lo, ADC_MIN, ADC_MAX) * self.sy + self.ty
-        upper = _clip(hi, ADC_MIN, ADC_MAX) * self.sy + self.ty
+        lower = lo * self.sy + self.ty
+        upper = hi * self.sy + self.ty
         return lower, upper
 
-    def top(self):
+
+    def amp(self):
         """
         Returns:
-            tuple: Vtop.
+            float: Vamp.
         """
-        lo, hi = self._get_levels()
-        upper = _clip(hi, ADC_MIN, ADC_MAX) * self.sy + self.ty
-        return upper
+        lo, hi = self.levels()
+        return hi - lo
+
 
     def to_ttl(self, ratio_low=0.2, ratio_high=0.4):
         """ Convert to TTL levels (0 or 1)
@@ -669,7 +703,7 @@ class Frame:
     def describe(self):
         """ Generate descriptive statistics.
 
-            | Count : Number of samples
+            | Size  : Number of samples
             | Vavg  : Average voltage
             | Vrms  : RMS voltage
             | Vamp  : Amplitude (Vtop - Vbase)
@@ -678,8 +712,10 @@ class Frame:
             | Vpp   : Peak to Peak (Vmax - Vmin)
             | Vmin  : minimum
             | Vmax  : maximum
-            | Period    : Signal period (second)
             | Frequency : Frequency (hertz)
+            | Period    : Signal period (second)
+            | Phase     : Phase shift from center (degree)
+            | Crest     : Crest factor (Vmax / Vrms)
 
         Returns:
             `DataFrame`
@@ -691,67 +727,71 @@ class Frame:
         vmax = round(y.max(), 3)
         vpp  = round(vmax - vmin, 3)
         vavg = round(y.mean(), 3)
-        vrms = round(sqrt(np.square(y, dtype=np.float32).mean()), 3)
-        vbase, vtop = [ round(v, 3) for v in self.levels() ]
+        vrms = round(_rms(y), 3)
+        vbase, vtop = ( round(v, 3) for v in self.levels() )
         vamp = round(vtop - vbase, 3)
-        freq = round(self.frequency, 3) if self.frequency > 1 else 0
-        period = round(1 / freq, 3) if freq else 0
+        # freq = round(self.frequency, 3) if self.frequency else None
+        freq, phase = self.freq(period=360)
+        freq   = freq and round(freq, 3)
+        phase  = freq and round(phase, 3)
+        period = freq and round(1 / freq, 3)
+        crest  = freq and round(vmax / vrms, 3)
 
-        k = 'Size Vavg Vrms Vamp Vbase Vtop Vpp Vmin Vmax Period Frequency'.split(' ')
-        v = ( self.size, vavg, vrms, vamp, vbase, vtop, vpp, vmin, vmax, period, freq )
+        k = 'Size Vavg Vrms Vamp Vbase Vtop Vpp Vmin Vmax Frequency Period Phase Crest'.split(' ')
+        v = ( self.size, vavg, vrms, vamp, vbase, vtop, vpp, vmin, vmax, freq, period, phase, crest )
 
         return pandas.DataFrame({ self.name: v }, index=k)
 
 
-    def thd(self, window=np.blackman, size=None):
-        """ Compute the total harmonic distortion.
+    # def thd(self, window=np.blackman, size=None):
+    #     """ Compute the total harmonic distortion.
 
-        Args:
-            window (func): optional, defaults to `numpy.hamming` .
-            size    (int): optional, defaults to closest power of 2.
-        Returns:
-            float: THD.
-        """
-        pts = self._points + np.float32(self.ty / self.sy)  # raw adc points at offset
-        ft, scale = _rfft(pts, window, size)
+    #     Args:
+    #         window (func): optional, defaults to `numpy.hamming` .
+    #         size    (int): optional, defaults to closest power of 2.
+    #     Returns:
+    #         float: THD.
+    #     """
+    #     pts = self._points + np.float32(self.ty / self.sy)  # raw adc points at offset
+    #     ft, scale = _rfft(pts, window, size)
 
-        ftm = np.abs(ft) * scale  # magnitude
-        ftm[0] = 0  # clear DC component
-        ftm_max = ftm.max()
+    #     ftm = np.abs(ft) * scale  # magnitude
+    #     ftm[0] = 0  # clear DC component
+    #     ftm_max = ftm.max()
 
-        thd = ((np.square(ftm).sum() - ftm_max ** 2.0) ** 0.5) / ftm_max
+    #     thd = ((np.square(ftm).sum() - ftm_max ** 2.0) ** 0.5) / ftm_max
 
-        return thd
+    #     return thd
 
 
-    def fft(self, window=np.blackman, size=None):
-        """ Compute the discreate Fourier Transform.
+    def spectrum(self, window=np.blackman, size=None):
+        """ Compute the magnitude and phase spectrum.
 
         Args:
             window  (func): optional, defaults to `numpy.hamming` .
             size     (int): optional, fft size.
         Returns:
-            tuple: ( frequencies (Hz), normalized magnitudes (Vrms), phase angles (rad) ).
+            tuple: ( frequencies (Hz), magnitudes (Vmax), phases (-1+1) ).
         """
 
         ft, scale = _rfft(self.y(), window, size)
-        ftx = np.linspace(0, 1 / (2 * self.sx), len(ft))  # frequencies (Hz)
-        ftm = np.abs(ft) * (scale / np.sqrt(2))           # magnitudes (Vrms)
-        ftp = ( ( np.angle(ft) + pi/2 ) % (2*pi) - pi ) * (ftm > self.sy)  # phases (rad)
+        ftx = np.linspace(0, 1 / 2 / self.sx, len(ft))  # frequencies (Hz)
+        ftm = np.abs(ft) * scale                        # magnitudes (Vmax)
+        ftp = ( np.angle(ft) / pi + 2.5 ) % 2 - 1       # phases from center (-1+1)
 
         return ftx, ftm, ftp
 
 
-    def frequencies(self, threshold=0.01, window=np.blackman, size=None):
+    def components(self, threshold=0.01, window=np.blackman, size=None):
         """ Component frequencies.
 
         Args:
             threshold (float): optional, from 1% to 100%
-            window  (func): optional, defaults to `numpy.hamming` .
-            size     (int): optional, fft size.
+            window     (func): optional, defaults to `numpy.hamming`
+            size        (int): optional, fft size
 
         Returns:
-            list: [ (frequency, amplitude, phase), ... ]
+            list: [ ( frequency (Hz), magnitude (Vmax), phase (-1+1) ), ... ]
         """
         dy = _parse.ratio(threshold=threshold) * ADC_MAX
 
@@ -760,17 +800,20 @@ class Frame:
 
         ft_mag = np.abs(ft) * scale  # magnitude (points)
         ft_avg = np.convolve(ft_mag, np.ones(10)).flatten()  # rolling average on 10 points
-        ii = np.argwhere(np.diff(ft_avg, prepend=0) > dy).flatten()  # filtered indexes of dy > threshold
-        ii = ii[np.argwhere(np.diff(ii, prepend=0) > 1).flatten()]   # filtered indexes separated by at least 1
-        ii_max = [ _max(0, i-2) + _imax(ft_mag[i-2: i+5]) for i in ii     ]  # discrete indexes of maximum
-        ii_avg = [ _max(0, i-1) + _iavg(ft_mag[i-1: i+2]) for i in ii_max ]  # continuous indexes of maximum
+        ii = np.nonzero(np.diff(ft_avg, prepend=0) > dy)[0]  # indexes of dy > threshold
+        ii = ii[np.nonzero(np.diff(ii, prepend=0) > 1)[0]]   # indexes separated by at least 1
+        ii = [ _max(0, i-2) + _imax(ft_mag[i-2: i+5]) for i in ii ]  # indexes of maximum
 
-        res = round(1 / self.sx / self.size)  # frequency resolution
-        frequencies = [ round(i / len(ft) / 2 / self.sx / res) * res for i in ii_avg ]  # Hz
-        magnitudes  = [ ft_mag[i] * self.sy / sqrt(2)                for i in ii_max ]  # Vrms
-        phases      = [ ( np.angle(ft[i]) + pi/2 ) % (2*pi) - pi     for i in ii_max ]  # rad
+        if not ii:
+            return tuple()
 
-        return list(zip(frequencies, magnitudes, phases))
+        xx, mm = zip(*( _quad_iterp(ft_mag, i) for i in ii ))  # interpolate magnitudes
+
+        frequencies = [ round(x / len(ft) / 2 / self.sx)     for x in xx ]  # Hz
+        magnitudes  = [ self.sy * m                          for m in mm ]  # Vmax
+        phases      = [ (np.angle(ft[i]) / pi + 2.5) % 2 - 1 for i in ii ]  # -1+1
+
+        return tuple(zip(frequencies, magnitudes, phases))
 
 
     def filter(self, ratio=0.1):
@@ -786,7 +829,7 @@ class Frame:
         ratio = _parse.ratio(ratio)
         wn = 1 / (ratio * len(self.buffer) / 2)
         b, a = signal.butter(3, wn)
-        self.buffer = signal.filtfilt(b, a, self.buffer, padlen=200).astype(np.int8)
+        self.buffer = signal.filtfilt(b, a, self.buffer, padlen=200)
 
         return self
 
@@ -906,9 +949,9 @@ class Frames(tuple):
     def xy(self):
         """
         Returns:
-            tuple: 1D Numpy arrays of x and y values: ( xs, ( ys, ... ) ) .
+            tuple: 1D Numpy arrays of x and y values: ( xs, ys, ... ) .
         """
-        return self.x(), self.y()
+        return self.x(), *( f.y() for f in self )
 
 
     def time(self):
@@ -923,6 +966,20 @@ class Frames(tuple):
         clock = time.perf_counter()
         now = datetime.datetime.now()
         return now + datetime.timedelta(seconds=self.clock - clock)
+
+
+    def phase(self, period=360, start=-1/2):
+        """ Phase shift between channel 1 and channel 2.
+
+        Args:
+            period (float): Optional range over which the phase wraps. Defaults to 360.
+            start   (bool): Optional phase start ratio or angle. Defaults to -1/2.
+        Returns:
+            float: Phase within [ start*period, (start+1)*period ]
+        """
+        freq1, phase1 = self.ch1.freq(period=period, start=0)
+        freq2, phase2 = self.ch2.freq(period=period, start=0)
+        return (((phase2 - phase1) + period) % period) + (start * period) + 0
 
 
     def slice(self, start, stop):
@@ -946,6 +1003,36 @@ class Frames(tuple):
             items[f.channel] = f
 
         return Frames(items, self.clock + dx)
+
+
+    def diff(self):
+        """ Substract channel 2 from channel 1.
+
+        Returns:
+            `Frames`
+        """
+        ch1, ch2 = self
+        assert ch1.sy == ch2.sy, "Volt range different between channels"
+
+        f = copy(ch1)
+        f.buffer = ch1._points - (ch2._points + np.float32(ch2.ty / ch2.sy))
+        f.frequency = None
+
+        return Frames((f, None), self.clock)
+
+
+    def power_factor(self):
+        """ Power factor.
+
+        Returns:
+            `float`
+        """
+        y1 = self.ch1.y()
+        y2 = self.ch2.y()
+        pwr_P  = np.dot(y1, y2) / len(y1)  # real power
+        pwr_S  = _rms(y1) * _rms(y2)       # apparent power
+        pf     = float(pwr_P / pwr_S)      # power factor
+        return pf
 
 
     def describe(self):
@@ -1010,6 +1097,14 @@ class Frames(tuple):
         # TODO cutom plot on dataframe
         # df.plot = types.MethodType(plot, df)
         return df
+
+
+    def to_numpy(self, axis=0):
+        """
+        Returns:
+            ndarray: 2D Numpy array of x and y values (enabled channels only).
+        """
+        return np.stack(self.xy(), axis=axis)
 
 
     def to_dict(self):
@@ -1107,13 +1202,18 @@ class Stream:
     def _emit(self, data):
         for stream in self._nodes:
             data_new = stream._func(data)
-            stream._emit(data_new)
+
+            if data_new is not None:
+                stream._emit(data_new)
 
 
     def _next(self):
         if self is self._root:
             return next(self._source)
-        return self._func(self._parent._next())
+
+        result = self._parent._next()
+        if result is not None:
+            return self._func(result)
 
 
     def agg(self, func):
@@ -1163,6 +1263,17 @@ class Stream:
             self._root._thread.start()
 
 
+    def to_list(self):
+        """ Chain a list and start the source.
+
+        Returns:
+            `list`
+        """
+        items = []
+        self.sink(items.append)
+        return items
+
+
     def plot(self, /, interval=1, rollover=None, **kwargs):
         """ Draw the data in a bokeh chart.
 
@@ -1188,12 +1299,12 @@ class Stream:
             data = [ { 'name': 'CH' + str(chl + 1),
                        'x'   : data[0],
                        'y'   : data[1 + i],
-                       'ylim': dev.ylim(chl)
+                       'ylim': kwargs.get('ylim') or dev.ylim(chl)
                      } for i, chl in enumerate(dev.channels()) ]
 
         chart = plotter.BokehChart(data, kwargs, rollover)
         chart.show()
-        self.sink(chart)
+        self.sink(chart.update)
         return chart
 
 
@@ -1289,8 +1400,8 @@ class VDS1022:
 
         # connect device
         if not self._connect():
-            raise USBError("USB device %s %4X:%4X not found or locked by another application." % (
-                MACHINE_NAME, USB_VENDOR_ID, USB_PRODUCT_ID))
+            raise USBError("USB device %4X:%4X not found or locked by another application." % (
+                USB_VENDOR_ID, USB_PRODUCT_ID))
 
         # initialize device
         self._load_flash(flash)
@@ -1312,8 +1423,7 @@ class VDS1022:
                 elif self._clock == clock:
                     try:
                         with self._lock:
-                            self._bulk_write(CMD.SET_RUNSTOP.pack(1))  # [ 0:run, 1:stop ]
-                            self._bulk_read(self._buffer)
+                            self._send(CMD.SET_RUNSTOP, 1)  # [ 0:run, 1:stop ]
                     except USBError:
                         _logger.warning('Lost connection to device.')
                         self.dispose()
@@ -1343,12 +1453,14 @@ class VDS1022:
         self.voltoffset       = [ 0    , 0     ]  # ratio of vertical range from -0.5 to +0.5 ( -0.1 = -1div )
         self.rollmode         = None   # auto-activates if sampling rate < ROLLMODE_THRESHOLD
         self.sweepmode        = None   # trigger sweep mode. None, AUTO, NORMAL, ONCE
-        self.sampling_rate    = 250e3  # sampling frequency (samples per second)
+        self.peakmode         = False  # peak mode. odd samples are max, even are min
+        self.sampling_rate    = None   # sampling frequency (samples per second)
         self.trigger_position = 0      # trigger position from 0 to 1.
 
         self._push(CMD.SET_CHL_ON, 0)  #  b0:CH1, b1:CH2  [0=OFF 1=ON]
         self._push(CMD.SET_PHASEFINE, self.phasefine)  # ???
         self._push(CMD.SET_PEAKMODE, 0)  # [ 0:off  1:on ]
+        self._push(CMD.SET_DEEPMEMORY, ADC_SIZE)  # ADC size
         self._push(CMD.SET_PRE_TRG, ADC_SIZE)  # pre-trigger size to max
         self._push(CMD.SET_SUF_TRG, 0)  # post-trigger size to min
         self._push(CMD.SET_MULTI, 0)  # [ 0:Out  1:PassFail  2:In ]
@@ -1360,7 +1472,7 @@ class VDS1022:
             self._push(CMD.SET_FREQREF[chl], 20)  # freq meter
             self._push_channel(chl)
 
-        self._push_sampling(self.sampling_rate, self.rollmode)
+        self._push_sampling(250e3, False, False)
 
 
     def stop(self):
@@ -1400,22 +1512,23 @@ class VDS1022:
             desc = usb.get_device_descriptor(dev)
 
             if desc.idVendor == USB_VENDOR_ID and desc.idProduct == USB_PRODUCT_ID:
-                handle = usb.open_device(dev)
                 try:
-                    usb.claim_interface(handle, USB_INTERFACE)
+                    intf = usb.get_interface_descriptor(dev, USB_INTERFACE, 0, 0)
+                    addrs = [ intf.endpoint[i].bEndpointAddress for i in range(intf.bNumEndpoints) ]
+
+                    self._usb = usb
+                    self._handle = usb.open_device(dev)
+                    self._ep_write = next( x for x in addrs if x & 0x80 == 0 )
+                    self._ep_read  = next( x for x in addrs if x & 0x80 != 0 )
+
+                    usb.claim_interface(self._handle, USB_INTERFACE)
+
+                    if self._send(CMD.GET_MACHINE, CMD.V) == 1:  # 0:Error 1:VDS1022 3:VDS2052
+                        return True
+
                 except USBError as ex:
-                    usb.close_device(handle)
-                    continue
-
-                intf = usb.get_interface_descriptor(dev, USB_INTERFACE, 0, 0)
-                addrs = [ intf.endpoint[i].bEndpointAddress for i in range(intf.bNumEndpoints) ]
-                self._ep_write = next( x for x in addrs if x & 0x80 == 0 )
-                self._ep_read  = next( x for x in addrs if x & 0x80 != 0 )
-                self._handle = handle
-                self._usb = usb
-
-                if self._send(CMD.GET_MACHINE, CMD.V) == 1:  # 0:Error 1:VDS1022 3:VDS2052
-                    return True
+                    if DEBUG:
+                        print(ex)
 
                 self._release()
 
@@ -1470,11 +1583,10 @@ class VDS1022:
 
 
     def _submit(self):
-        if self._queue:
-            while self._queue:
-                self._send(*self._queue.popitem(False))
-            return True
-        return False
+        n = len(self._queue)
+        while self._queue:
+            self._send(*self._queue.popitem(False))
+        return n
 
 
     def send(self, cmd, arg):
@@ -1546,6 +1658,7 @@ class VDS1022:
             array('B'): array of unsigned bytes
         """
         with self._lock:
+            assert len(self._buffer) > FLASH_SIZE
 
             self._bulk_write(CMD.READ_FLASH.pack(1))
             ret = self._bulk_read(self._buffer, FLASH_SIZE)
@@ -1687,8 +1800,8 @@ class VDS1022:
                 self._bulk_write(array('B', header.pack(i) + dump[start: start + payload_size]))
                 self._bulk_read(self._buffer, 5)
                 status, value = CMD.BI.unpack_from(self._buffer)
-                assert status == CMD.S, "Bad status: " + chr(status)
-                assert value == i, "Bad part id. Expected %s, got %s" % (i, value)
+                assert status == CMD.S, "\nBad status: " + chr(status)
+                assert value == i, "\nBad part id. Expected %s, got %s" % (i, value)
 
             print(' ' * 50, end='\r')
 
@@ -1703,8 +1816,7 @@ class VDS1022:
             probe    (int, str): Optional probe ratio (ex: 10 or 'x10'). Defaults to ``10``
             coupling (int, str): Coupling: `DC`, `AC`, `GND`
         Examples:
-            >>> dev.set_channel(CH1, AC, '10v', probe='10x')
-            >>> dev.set_channel(CH2, DC, '10v', offset=2/10, probe='10x')
+            >>> dev.set_channel(CH2, range='10v', offset=2/10, probe='10x')
         """
         chl       = _parse.constant(channel=channel)
         coupling  = _parse.constant(coupling=coupling)
@@ -1764,67 +1876,68 @@ class VDS1022:
         self._push(CMD.SET_CHANNEL[chl], chl_arg)  # set channel and clear samples
 
 
-    def set_channel_ext(self, state):
-        """ Set the output TTL state of the multi channel EXT.
+    def set_multi(self, state):
+        """ Set the output TTL state of the MULTI port.
 
         Args:
-            state (int): 0:Low  1:Hi 5v
+            state (int): 0:Low 0v  1:Hi 5v
         """
         # SET_MULTI
         #  b0-1 : Multi mode [ 0:Trigger Out  1:Pass/Fail Out  2:Trigger In ]
         #  b8   : Pass/Fail output state  [ 0:TTL low 0v  1:TTL hi 5v ]
-        multi_arg = MULTI_PF | (state & 1) << 8
+        multi_arg = MULTI_PF | bool(state) << 8
         self.send(CMD.SET_MULTI, multi_arg)
 
 
-    def set_peak_mode(self, enable=True):
-        """ To enable or disable peak mode sampling
-
-        Args:
-            enable (bool)
-        """
-        self._push(CMD.SET_PEAKMODE, enable & 1)  # [ 0:off  1:on ]
-
-
-    def set_sampling(self, rate, roll=None):
+    def set_sampling(self, rate, roll=None, peak=False):
         """ Configure the sampling rate
 
         Args:
-            rate  (int): Sampling rate, from 2.5 to 100M samples per second.
-            roll (bool): Optional, sets the roll mode. Defaults to sampling rate >= 2500
+            rate (int,str): Sampling rate, from 2.5 to 100M samples per second.
+            roll    (bool): Optional, sets the roll mode. Defaults to sampling rate >= 2500
+            peak    (bool): Optional, enables or disables peak mode sampling.
         """
         rate = _parse.freq(rate=rate)
         assert SAMPLING_RATES[0] <= rate <= SAMPLING_RATES[-1], "Parameter rate out of range"
-        self._push_sampling(rate, roll)
+        self._push_sampling(rate, roll, peak)
 
 
-    def set_timerange(self, range, roll=None):
+    def set_timerange(self, range, roll=None, peak=False):
         """ Configure the sampling rate for 5000 samples for a given time range.
 
         Args:
             range (float,str): Frame duration in seconds from 50e-6 (50us) to 2000 (2000s)
             roll       (bool): Optional, sets the roll mode. Defaults to timerange >= 2s
+            peak       (bool): Optional, enables or disables peak mode sampling.
         """
         timerange = _parse.seconds(range=range)
         rate = SAMPLES / timerange
         assert SAMPLING_RATES[0] <= rate <= SAMPLING_RATES[-1], "Parameter range out of range"
-        self._push_sampling(rate, roll)
+        self._push_sampling(rate, roll, peak)
 
 
-    def _push_sampling(self, rate, roll):
+    def _push_sampling(self, rate, roll, peak):
 
-        prescaler = _max(1, round(SAMPLING_RATES[-1] / rate))
+        prescaler = _max(1, round(SAMPLING_RATES[-1] / _max(3, rate)))
+        sr = SAMPLING_RATES[-1] / prescaler
+        rm = sr < ROLLMODE_THRESHOLD if roll is None else roll
 
-        self.sampling_rate = SAMPLING_RATES[-1] / prescaler
-        self.rollmode = self.sampling_rate < ROLLMODE_THRESHOLD if roll is None else roll
+        if sr != self.sampling_rate:
+            self.sampling_rate = sr
+            self._push(CMD.SET_TIMEBASE, prescaler)
 
-        if self.rollmode:
-              self.trigger_position = 1
+        if rm != self.rollmode:
+            self.rollmode = rm
+            self._push(CMD.SET_ROLLMODE, rm & 1)
+            # adding +3 to fix bad samples at the end when roll mode is on.
+            self._push(CMD.SET_DEEPMEMORY, ADC_SIZE + (3 if rm else 0))
 
-        self._push(CMD.SET_TIMEBASE, prescaler)
-        self._push(CMD.SET_ROLLMODE, self.rollmode & 1)
-        # adding +3 to fix bad samples at the end when roll mode is on.
-        self._push(CMD.SET_DEEPMEMORY, ADC_SIZE + (3 if self.rollmode else 0))
+        if peak is not None and peak != self.peakmode:
+            self.peakmode = peak
+            self._push(CMD.SET_PEAKMODE, peak & 1)  # [ 0:off  1:on ]
+
+        if rm:
+            self.trigger_position = 1  # sets origine on the right
 
 
     def set_trigger(self,
@@ -1872,7 +1985,9 @@ class VDS1022:
         self.sweepmode = sweep
 
         # alternate mode if previous command is SET_TRIGGER and channel is not external
-        alternate = chl != EXT and next(reversed(self._queue)) is CMD.SET_TRIGGER
+        alternate = chl != EXT \
+                    and bool(self._queue) \
+                    and next(reversed(self._queue)) is CMD.SET_TRIGGER
 
         # external channel
         multi = (MULTI_OUT, MULTI_IN)[chl == EXT]
@@ -1940,7 +2055,7 @@ class VDS1022:
             trg |= (chl & 1) << 13 | (mode & 2) << 13 | (mode & 1) << 8
 
         if mode == EDGE:
-            # bit 9    : ??? [ AC:0 ]
+            # bit 9    : coupling [ AC:0 ]
             # bit 10,11: sweep if not alternate [ 0:Auto 1:Normal 2:Once ]
             # bit 12   : condition [ 0:raise 1:fall ]
             trg |= (condition < 0) << 12 | (not alternate and sweep & 3) << 10
@@ -2040,7 +2155,7 @@ class VDS1022:
             >>> dev = VDS1022()
             >>> dev.set_channel(CH1, range='10v', coupling=DC, offset=1/10, probe='x1')
             >>> dev.set_channel(CH2, range='10v', coupling=DC, offset=1/10, probe='x1')
-            >>> dev.stream(freq=3).agg('rms').plot()
+            >>> dev.stream(freq=3).rms().plot()
 
             Stream plotting with customised aggregation
 
@@ -2052,14 +2167,14 @@ class VDS1022:
 
             Streaming to a function
 
-            >>> src = dev.stream(freq=1).agg('rms').sink(print)
+            >>> src = dev.stream(freq=1).rms().sink(print)
         """
         fetch = self.fetch_iter(freq, autorange)
         return Stream(self, fetch)
 
 
     def fetch(self, autorange=False):
-        """ To acquire a sampling frame for each enabled channel.
+        """ Acquire a sampling frame for each enabled channel.
 
         Args:
             autorange (float): Optional, auto adjusts the voltrange. Defaults to False.
@@ -2101,26 +2216,31 @@ class VDS1022:
             >>>     print(frames)
             >>>     break
         """
-        with self._lock:
+        assert not (autosense and self.sweepmode), "autosense not supported with NORMAL/ONCE sweep mode"
 
+        with self._lock:
             if not any(self.on):
                 self.on[CH1] = True
 
-            buffer = self._buffer
-            delay  = _max(0, 1 / freq - 0.05) if freq else 0
-            start  = FRAME_SIZE - SAMPLES - (0 if self.rollmode else 50)  # right or center
-            points = np.frombuffer(buffer, 'b', SAMPLES, offset=start)
-            frames = [ None ] * CHANNELS
-            wait   = 0
+            buffer  = self._buffer
+            delay   = _max(0, 1 / freq - 0.05) if freq else 0
+            start   = FRAME_SIZE - SAMPLES - (0 if self.rollmode else 50)  # right or center
+            points  = np.frombuffer(buffer, np.int8, SAMPLES, offset=start)
+            frames  = [ None ] * CHANNELS
+            changed = False
+            wait    = 0
+            clock   = 0
 
-            # self._push(CMD.SET_CHL_ON, _bits(self.on)  # [ 0:off 1:on ]
-            # self._push(CMD.SET_RUNSTOP, 0)  # [ 0:run, 1:stop ]
-            if self._submit():
-                if self._stop.wait(0.2):
-                    return
+            #     self._push(CMD.SET_CHL_ON, _bits(self.on)  # [ 0:off 1:on ]
+            #     self._push(CMD.SET_RUNSTOP, 0)  # [ 0:run, 1:stop ]
 
         while True:
             with self._lock:
+
+                if self._submit() > 5:
+                    wait = 0.25  # initial time for freq meter
+                else:
+                    wait = _clip(delay - self._clock + clock, 0, delay)
 
                 while True:
                     if self._stop.wait(wait):
@@ -2139,7 +2259,8 @@ class VDS1022:
                             pt_min = int(points.min())
                             pt_max = int(points.max())
                             if autorange:  # adjust volt range and volt offset
-                                self._adjust_range(chl, pt_min, pt_max)
+                                if self._adjust_range(chl, pt_min, pt_max):
+                                    continue
                             if autosense:  # adjust trigger level and frequency meter level
                                 self._adjust_sense(chl, pt_min, pt_max)
 
@@ -2148,48 +2269,45 @@ class VDS1022:
                         frequency = time_sum and period_num / time_sum * SAMPLING_RATES[-1]  # frequency meter
                         frames[chl] = Frame(self, chl, buffer[start + cursor: start + SAMPLES], offset, frequency)
 
-                    if self._submit():  # if sent pending commands
+                    if self._submit() > 2:  # if sent _adjust_range commands
                         wait = 0.2
                         continue
 
                     break
 
-            yield Frames(frames, self._clock)
-            wait = delay
+            clock = self._clock
+            yield Frames(frames, clock)
 
 
-    def _pull_data(self, on, buffer):
+    def _pull_data(self, chl_on, buffer):
 
         # b0-7:CH1  b8-15:CH2  [ 0x04:OFF 0x05:ON ]
-        arg = int.from_bytes(on, 'little') & 0x0101 | 0x0404
-        wait = 0
+        arg  = int.from_bytes(((4, 5)[on] for on in chl_on), 'little')
+        n    = sum(chl_on)
+        wait = 0  # wait 0ms if first attempt, 60ms otherwise
 
-        if arg != 0x0404:  # if at least one channel is on
+        i = 0
+        while i < n:
+            try:
+                self._bulk_write(CMD.GET_DATA.pack(arg))
 
-            while True:
-                try:
-                    self._bulk_write(CMD.GET_DATA.pack(arg))
-
+                i = 0
+                while i < n:
                     ret = self._bulk_read(buffer)
                     CMD.GET_DATA.log(arg, ret, buffer)
-                    if ret == FRAME_SIZE:  # 5 (EBUSY) or 5211 (frame)
-                        yield CMD.BIIH.unpack_from(buffer)
 
-                        if arg == 0x0505:  # if both channels are on
-                            ret = self._bulk_read(buffer)
-                            CMD.GET_DATA.log(arg, ret, buffer)
-                            assert ret == FRAME_SIZE
-                            yield CMD.BIIH.unpack_from(buffer)
-
-                        return
-                    else:
-                        # wait 0ms if first attempt, 60ms otherwise
+                    if ret != FRAME_SIZE:  # if EBUSY
+                        assert i == 0 and ret == 5
                         if self._stop.wait(wait):
                             return
                         wait = 0.06
+                        break
 
-                except USBError as ex:
-                    self._on_usb_err(ex)
+                    yield CMD.BIIH.unpack_from(buffer)
+                    i += 1
+
+            except USBError as ex:
+                self._on_usb_err(ex)
 
 
     def _adjust_range(self, chl, pt_min, pt_max):
@@ -2210,6 +2328,7 @@ class VDS1022:
                 self.voltoffset[chl] = _clip(-mid / ADC_RANGE, -0.4, 0.4)
                 self.voltrange[chl] = VOLT_RANGES[vb_new]
                 self._push_channel(chl)
+                return True
 
 
     def _adjust_sense(self, chl, pt_min, pt_max):
@@ -2223,7 +2342,7 @@ class VDS1022:
 
 
     def read(self, duration, pre=None):
-        """ To acquire continuous samples for a defined time from the start or on a trigger.
+        """ Acquire continuous samples for a defined time from the start or on a trigger.
         The maximum sampling rate is arround 100Kbs/s.
         Raise an error if samples are missing.
 
@@ -2292,17 +2411,18 @@ class VDS1022:
             if not any(self.on):
                 self.on[CH1] = True  # turn on CH1 if all channels are off
 
-            buffer    = self._buffer
-            adc_size  = ADC_SIZE + 20  # cursor becomes circular with ADC_SIZE + 20
-            cmd_get   = CMD.GET_DATA.pack(int.from_bytes(self.on, 'little') & 0x0101 | 0x0404)
-            chl_cnt   = sum(1 for on in self.on if on)  # number of used channels
-            delay     = _clip(ADC_SIZE / self.sampling_rate / 4 - 0.035 * chl_cnt, 0, 1)
-            maxtime   = ADC_SIZE / self.sampling_rate
-            clock     = self._clock + 5  # init higher value
-            frames    = [ None ] * CHANNELS
-            cursors   = [ 20 ] * CHANNELS  # 20 to account for ADC_SIZE + 20
-            offset    = 0
-            size      = 0
+            buffer   = self._buffer
+            adc_size = ADC_SIZE + 20  # cursor becomes circular with ADC_SIZE + 20
+            cmd_arg  = int.from_bytes(((4, 5)[on] for on in self.on), 'little')
+            cmd_get  = CMD.GET_DATA.pack(cmd_arg)
+            chl_cnt  = sum(self.on)  # number of used channels
+            delay    = _clip(ADC_SIZE / self.sampling_rate / 4 - 0.035 * chl_cnt, 0, 1)
+            maxtime  = ADC_SIZE / self.sampling_rate
+            clock    = self._clock + 5  # init higher value
+            frames   = [ None ] * CHANNELS
+            cursors  = [ 20 ] * CHANNELS  # 20 to account for ADC_SIZE + 20
+            offset   = 0
+            size     = 0
 
             self._push(CMD.SET_SUF_TRG, 0)  # post-trigger size
             self._push(CMD.SET_PRE_TRG, adc_size)  # pre-trigger size
@@ -2350,7 +2470,7 @@ class VDS1022:
         """
         with self._lock:
 
-            points  = np.frombuffer(self._buffer, 'b', SAMPLES, FRAME_SIZE - SAMPLES - 50)
+            points  = np.frombuffer(self._buffer, np.int8, SAMPLES, FRAME_SIZE - SAMPLES - 50)
             rate    = SAMPLING_RATES[-1]
             tries   = 0
             hits    = 0
@@ -2359,7 +2479,7 @@ class VDS1022:
             self.sweepmode = AUTO
             self.trigger_position = 1/2
 
-            self._push_sampling(25000, False)  # 25K samples per second
+            self._push_sampling(25000, False, False)  # 25K samples per second
             self._push(CMD.SET_PEAKMODE, 1)  # [ 0:off  1:on ]
             self._push(CMD.SET_MULTI, 0)  # [ 0:TrgOut  1:PassFail  2:TrgIn ]
             self._push(CMD.SET_PRE_TRG, (ADC_SIZE >> 1) - HTP_ERR )  # htp at half
@@ -2383,7 +2503,7 @@ class VDS1022:
                 if self._stop.wait(0.2):
                     return
 
-                for chl, time_sum, period_num, cursor in self._pull_data(self.on, points.base):
+                for chl, time_sum, period_num, cursor in self._pull_data(self.on, self._buffer):
 
                     vb = VOLT_RANGES.index(self.voltrange[chl])
                     offset = round(ADC_RANGE * self.voltoffset[chl])
@@ -2419,7 +2539,7 @@ class VDS1022:
                         if rate_new != self.sampling_rate and rate_new < rate:
                             _log("CH%s  rate:%s -> %s  period:%s"
                                 , chl + 1, self.sampling_rate, rate_new, period)
-                            self._push_sampling(rate_new, False)
+                            self._push_sampling(rate_new, False, None)
                             rate = rate_new
                             hits = 0
 
@@ -2440,7 +2560,7 @@ class VDS1022:
             self._initialize()
 
             calibration = deepcopy(self.calibration)
-            points = np.frombuffer(self._buffer, 'b', SAMPLES, FRAME_SIZE - SAMPLES - 50)
+            points = np.frombuffer(self._buffer, np.int8, SAMPLES, FRAME_SIZE - SAMPLES - 50)
 
             for cals in calibration[COMP]:
                 cals[:] = ( _clip(x, 500 , 600) for x in cals )  # clip zero-compensation
@@ -2453,12 +2573,13 @@ class VDS1022:
                     return False
 
             for vb in range(len(VOLT_RANGES)):
-                if not self._calibrate(points, calibration, AMPL, vb, -110, -110):
+                if not self._calibrate(points, calibration, AMPL, vb, -100, -100):
                     return False
 
             self.calibration = calibration
             self._save_calibration()
             self._initialize()
+            self._submit()
 
             _printf('Saved calibration to\n%s', self.calibration_path)
 
@@ -2489,7 +2610,7 @@ class VDS1022:
             if self._stop.wait(0.25):
                 return False
 
-            for chl, _, _, _ in self._pull_data(on, points.base):
+            for chl, _, _, _ in self._pull_data(on, self._buffer):
                 hits, steps, cal_prev, err_prev = states[chl]
 
                 cal   = calibration[ical][chl][vb]
