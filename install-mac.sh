@@ -14,7 +14,7 @@ _ARCH=$(uname -m)
 
 
 write () {
-    echo -e "$(</dev/stdin)" > "$1"
+    cat > "$1"
     [ -z "$2" ] || chmod "$2" "$1"
 }
 
