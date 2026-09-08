@@ -335,6 +335,7 @@ EOF
 
 	write "etc/udev/rules.d/70-$_ID.rules" <<EOF
 SUBSYSTEMS=="usb", ATTRS{idVendor}=="5345", ATTRS{idProduct}=="1234", MODE="0666"
+ACTION=="bind", DRIVER=="usb_serial_simple", ATTRS{idVendor}=="5345", ATTRS{idProduct}=="1234", ATTR{driver/unbind}="%k"
 EOF
 
 }
