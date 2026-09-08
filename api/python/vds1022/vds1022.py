@@ -1384,6 +1384,7 @@ class VDS1022:
 
         # USB
         self._usb = None
+        self._reattach_kernel_driver = False
         self._handle = None
         self._ep_write = None
         self._ep_read = None
@@ -1521,6 +1522,13 @@ class VDS1022:
                     self._ep_write = next( x for x in addrs if x & 0x80 == 0 )
                     self._ep_read  = next( x for x in addrs if x & 0x80 != 0 )
 
+                    # starting kernel 6.14.5, OWON is claimed by usb_simple_serial driver
+                    if usb.is_kernel_driver_active(self._handle, USB_INTERFACE):    
+                        usb.detach_kernel_driver(self._handle, USB_INTERFACE)
+                        self._reattach_kernel_driver = True
+                    else:
+                        self._reattach_kernel_driver = False
+
                     usb.claim_interface(self._handle, USB_INTERFACE)
 
                     if self._send(CMD.GET_MACHINE, CMD.V) == 1:  # 0:Error 1:VDS1022 3:VDS2052
@@ -1538,6 +1546,10 @@ class VDS1022:
             try:
                 self._usb.release_interface(self._handle, USB_INTERFACE)
             except: pass
+            if self._reattach_kernel_driver:
+                try:
+                    self._usb.attach_kernel_driver(self._handle, USB_INTERFACE)
+                except: pass
             try:
                 self._usb.close_device(self._handle)
             except: pass
