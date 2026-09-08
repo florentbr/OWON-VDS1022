@@ -81,7 +81,7 @@ class BokehChart:
         axe_opts = [ { k:v[i] for k,v in opts.items() if k not in fig_opts }
                      for i in range(len(lines)) ]
 
-        p = bokeh.plotting.Figure(**fig_opts)
+        p = bokeh.plotting.figure(**fig_opts)
         p.grid.grid_line_alpha = 0.5
         p.toolbar.logo = None
 
@@ -116,14 +116,14 @@ class BokehChart:
             formatter = self._FORMATTERS.get(xscale)
             if formatter:
                 ax.minor_tick_line_color = None
-                ax.formatter = bokeh.models.FuncTickFormatter(code=formatter)
+                ax.formatter = bokeh.models.CustomJSTickFormatter(code=formatter)
 
         for ax in p.yaxis:
             ax.ticker.desired_num_ticks = 10
             formatter = self._FORMATTERS.get(yscale)
             if formatter:
                 ax.minor_tick_line_color = None
-                ax.formatter = bokeh.models.FuncTickFormatter(code=formatter)
+                ax.formatter = bokeh.models.CustomJSTickFormatter(code=formatter)
 
         # if yscale == 'log':
         #     p.ygrid.minor_grid_line_color = 'gray'
