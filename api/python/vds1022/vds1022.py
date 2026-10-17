@@ -2072,9 +2072,11 @@ class VDS1022:
             # bit 12   : condition [ 0:raise 1:fall ]
             trg |= (condition < 0) << 12 | (not alternate and sweep & 3) << 10
         elif mode in (PULSE, SLOPE):
-            # bit 5,6,7: condition [ 0:Rise> 1:Rise= 2:Rise< 3:Fall> 4:Fall= 5:Fall< ]
+            # bit 5,6,7: condition [ 0:Rise> 1:Rise= 2:Rise< 4:Fall> 5:Fall= 6:Fall< ]
+            #            (3 is unused: the fall conditions start at 4)
             # bit 10,11: sweep if not alternate [ 0:Auto 1:Normal 2:Once ]
-            trg |= (condition & 7) << 5 | (not alternate and sweep & 3) << 10
+            cond_val = (condition & 7) + (condition < 0)
+            trg |= (cond_val & 7) << 5 | (not alternate and sweep & 3) << 10
         else:
             raise NotImplementedError("Trigger mode not supported: " + str(mode))
 
