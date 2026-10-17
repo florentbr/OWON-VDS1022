@@ -646,7 +646,7 @@ class Frame:
 
 
     def _get_levels(self):
-        points = self._points + 128
+        points = self._points.astype(np.int16) + 128  # upcast: int8 overflows with numpy >= 2
         counts = np.bincount(points, minlength=256)
         m = np.dot(counts, range(256)) // len(points)
         lo = np.argmax(counts[:m + 1]) - 128
