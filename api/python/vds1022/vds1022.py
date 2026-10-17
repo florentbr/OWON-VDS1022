@@ -2053,18 +2053,22 @@ class VDS1022:
         self._push(CMD.SET_TRG_HOLDOFF[chl % CHANNELS], _swap16(m << 6 | e & 7))
 
         # trigger settings
+        # The register's type field differs from this module's mode constants:
+        # [ 0:edge 1:slope 2:video 3:pulse ] (as in OWON's software).
+        reg_type = (0, 2, 1, 3)[mode]
+
         # bit 0 : source [ 0:channel 1:external/multi ]
         # bit 15: type [ 0:single 1:alternate ]
         trg = (chl == EXT) & 1 | (alternate & 1) << 15
 
         if alternate:
             # bit 14  : channel [ 0:CH1 1:CH2 ]
-            # bit 13,8: mode [ 0:edge 1:video 2:slope 3:pulse ]
-            trg |= (chl & 1) << 14 | (mode & 2) << 7 | (mode & 1) << 13
+            # bit 13,8: type [ 0:edge 1:slope 2:video 3:pulse ]
+            trg |= (chl & 1) << 14 | (reg_type & 2) << 7 | (reg_type & 1) << 13
         else:
             # bit 13  : channel [ 0=CH1 1=CH2 ]
-            # bit 8,14: mode [ 0:edge 1:video 2:slope 3:pulse ]
-            trg |= (chl & 1) << 13 | (mode & 2) << 13 | (mode & 1) << 8
+            # bit 8,14: type [ 0:edge 1:slope 2:video 3:pulse ]
+            trg |= (chl & 1) << 13 | (reg_type & 2) << 13 | (reg_type & 1) << 8
 
         if mode == EDGE:
             # bit 9    : coupling [ AC:0 ]
